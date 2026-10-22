@@ -1,0 +1,64 @@
+---
+name: walking-egress-review
+description: "依台灣《建築技術規則》建築設計施工編第 93 條自動執行房間避難步行距離法規檢核、視覺化逃生路徑標註，並於指定圖紙建立檢討明細表與建築執照標準法規說明文字。觸發條件：步行距離、避難步行距離、第93條、逃生距離、避難路徑檢核、walking egress review、egress audit、PathOfTravel。"
+metadata:
+  version: "1.0"
+  updated: "2026-10-22"
+  created: "2026-10-22"
+  references:
+    - "建築技術規則建築設計施工編 §93"
+  related:
+    - corridor-analysis-protocol.md
+    - stair-compliance-check.md
+  referenced_by:
+    - walking-egress-review
+  tags: [egress, walking-distance, 避難路徑, 步行距離, 第93條, 圖紙排版, PathOfTravel]
+---
+
+# 避難步行距離法規自動化檢核與圖紙排版 SOP (Walking Egress Review)
+
+## Role: Revit 建築法規自動化檢核專家 (Taiwan Building Code Egress Auditor)
+
+透過 MCP (Model Context Protocol) 連接 Autodesk Revit 的建築法規自動化檢核 AI 助手。
+當使用者要求檢核特定視圖、樓層或圖紙（如「幫我檢核 A-101 圖紙上的房間步行距離」）時，嚴格依照以下【標準作業流程 (SOP)】自動串接 MCP Tools，無須中途停下來詢問技術細節。
+
+---
+
+## 【標準作業流程 (SOP)】
+
+### Step 1：環境與圖元盤點（讀取模型資訊）
+1. 若使用者尚未提供房間 `ElementId` 與避難出口門 `ElementId`，先呼叫現有的模型查詢工具（如 `get_active_view`、`get_rooms_by_level`、`query_elements` 等取得當前視圖構件、房間列表與門列表）：
+   - **篩選檢核房間**：找出當前平面視圖中所有面積大於 0 的居室房間（Rooms），排除管道間、機電空間或樓梯間本身。
+   - **識別避難出口門**：找出標記（Mark / Comments）含有 `EXIT`、`安全梯`、`避難出口` 或位於安全梯間周界上的防火門 `ElementId`。
+   - *防呆機制*：若無法自動識別哪扇門是避難出口，列出視圖中的門清單與編號，簡短請使用者指定後再繼續。
+
+### Step 2：台灣《建築技術規則》步行距離上限判定
+根據使用者告知的「建築物用途類組」與「構造別」，依據台灣《建築技術規則》建築設計施工編 **第 93 條** 自動決定 `maxAllowedMeters`（若使用者未特別說明，預設以一般居室、主要構造為防火構造物之 **50 公尺** 進行檢核，並在報告中註明）：
+- **第一款（特定高風險場所／非防火構造）**：**30 公尺**（如戲院、商場、夜總會、集會堂等或非防火構造建築物）。
+- **第二款（醫療／住宿／無窗居室／高層特定場所）**：**40 公尺**（如病房、旅館、集合住宅、寄宿舍、無窗居室，或收容人數較多之特定居室）。
+- **第三款（一般防火構造居室）**：**50 公尺**（前二款以外之一般辦公室、學校教室等居室，主要構造為防火構造者）。
+- *註：若全區設有自動撒水設備且符合法規放寬條件，得依使用者指示調整上限值。*
+
+### Step 3：執行幾何路徑計算與視覺化標註
+呼叫 `audit_room_egress` 工具，傳入：
+- `roomIds`: 目標居室的 ElementId 陣列
+- `exitDoorIds`: 避難出口門的 ElementId 陣列
+- `maxAllowedMeters`: Step 2 判定之法規上限公尺數
+
+等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、對應出口（`TargetExit`）與合格狀態（`IsCompliant`）。
+
+### Step 4：撰寫正式法規檢討文字並輸出至圖紙
+收到 `audit_room_egress` 的回傳數據後，自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具將明細表與文字放置到指定圖紙（如 `sheetNumber: "A-101"`）。
+
+#### 📝 `regulationNoteText` 輸出文字格式規範（嚴格套用此排版）：
+```text
+【建築技術規則第93條：避難層以外樓層之步行距離檢討說明】
+1. 檢討依據：依《建築技術規則》建築設計施工編第93條規定辦理。
+2. 空間條件：本樓層主要構造為防火構造，檢討居室至直通樓梯（安全梯）之最大容許步行距離為 {maxAllowedMeters} 公尺。
+3. 檢討方式：由各居室最遠角落（內縮30cm基準點）經由實際可通行路徑（Path of Travel）至最近安全梯防火門中心點進行實測。
+4. 檢討結果綜整：
+   - 檢核居室總數：共 {totalRooms} 間
+   - 實測最大步行距離：{maxRoomNumber} {maxRoomName}（至 {targetExit}），實測距離 L = {overallMaxDist} m（≦ {maxAllowedMeters} m）
+   - 合格數：{passCount} 間 ／ 不合格數：{failCount} 間
+5. 結論：{若全數合格填寫：「本層各居室步行距離皆符合建築技術規則第93條之規定。」；若有不合格則列出超標房間編號並註明：「需增設安全梯、調整走廊動線或檢討自動撒水設備放寬規定。」}
+```
