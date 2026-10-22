@@ -9,10 +9,31 @@ MCP.CoreRuntime/
 # Secrets / credentials — NEVER commit tokens or API keys
 .env
 .env.*
+*.env
 !.env.example
+!.env.sample
+!.env.template
 *.pat
 *.token
 github_pat_*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+*credentials*.json
+*service-account*.json
+*secret*
+*password*
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*.ppk
 
 # IDE and Editor files
 .vs/
