@@ -67,6 +67,7 @@ export const WRITE_PREFIXES: string[] = [
     "shift_",
     "import_",
     "audit_",
+    "generate_",
 ];
 
 /** 精確工具名稱：破壞性操作（destructiveHint=true） */

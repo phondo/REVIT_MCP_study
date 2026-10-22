@@ -1,12 +1,12 @@
 /**
- * 房間避難路徑法規檢核工具 (Egress Audit Tools)
+ * 房間避難路徑法規檢核與圖紙排版工具 (Egress Audit & Sheet Note Tools)
  */
 
 import { z } from "zod";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 /**
- * Zod 輸入驗證 Schema
+ * Zod 輸入驗證 Schema：audit_room_egress
  */
 export const auditRoomEgressInputSchema = z.object({
     roomIds: z
@@ -24,6 +24,21 @@ export const auditRoomEgressInputSchema = z.object({
 });
 
 export type AuditRoomEgressInput = z.infer<typeof auditRoomEgressInputSchema>;
+
+/**
+ * Zod 輸入驗證 Schema：generate_egress_sheet_note
+ */
+export const generateEgressSheetNoteInputSchema = z.object({
+    sheetNumber: z
+        .string()
+        .min(1, "sheetNumber 不可為空")
+        .describe('要放置檢討表與備註的目標圖號，例如 "A-101"'),
+    regulationNoteText: z
+        .string()
+        .describe("AI 根據建築技術規則自動彙整的法規說明與結論文字，支援換行符號"),
+});
+
+export type GenerateEgressSheetNoteInput = z.infer<typeof generateEgressSheetNoteInputSchema>;
 
 export const egressAuditTools: Tool[] = [
     {
@@ -49,6 +64,25 @@ export const egressAuditTools: Tool[] = [
                 },
             },
             required: ["roomIds", "exitDoorIds", "maxAllowedMeters"],
+        },
+    },
+    {
+        name: "generate_egress_sheet_note",
+        description:
+            "於指定圖紙建立房間避難步行距離檢討表並放置法規檢討綜整說明文字。自動建立包含房間編號、名稱與 4 個避難共用參數的明細表，並排版於圖紙右下角及下方文字備註。",
+        inputSchema: {
+            type: "object",
+            properties: {
+                sheetNumber: {
+                    type: "string",
+                    description: '要放置檢討表與備註的目標圖號，例如 "A-101"',
+                },
+                regulationNoteText: {
+                    type: "string",
+                    description: "AI 根據建築技術規則自動彙整的法規說明與結論文字，支援換行符號",
+                },
+            },
+            required: ["sheetNumber", "regulationNoteText"],
         },
     },
 ];
@@ -91,4 +125,18 @@ export function formatEgressAuditResponse(data: any): string {
 
     lines.push(``, `--- 原始 JSON 資料 ---`, JSON.stringify(data, null, 2));
     return lines.join("\n");
+}
+
+/**
+ * 將 C# 端回傳的圖紙自動排版結果格式化回傳給 AI
+ */
+export function formatGenerateEgressSheetNoteResponse(sheetNumber: string, data: any): string {
+    const resolvedSheetNumber = data?.SheetNumber || sheetNumber;
+    const header = `已成功於圖紙 ${resolvedSheetNumber} 建立法規檢討明細表與備註`;
+
+    if (!data || typeof data !== "object") {
+        return header;
+    }
+
+    return `${header}\n\n--- 詳細資訊 ---\n${JSON.stringify(data, null, 2)}`;
 }
