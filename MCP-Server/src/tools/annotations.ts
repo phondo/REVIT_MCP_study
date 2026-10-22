@@ -64,7 +64,9 @@ export const WRITE_PREFIXES: string[] = [
     "auto_",
     "scale_",
     "shift_",
+    "shift_",
     "import_",
+    "audit_",
 ];
 
 /** 精確工具名稱：破壞性操作（destructiveHint=true） */

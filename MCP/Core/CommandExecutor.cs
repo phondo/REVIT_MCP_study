@@ -784,6 +784,11 @@ namespace RevitMCP.Core
                         result = CreateDuctSystem(parameters);
                         break;
 
+                    // === 避難路徑法規檢核 ===
+                    case "audit_room_egress":
+                        result = EgressAuditService.ExecuteEgressAudit(_uiApp.ActiveUIDocument.Document, parameters);
+                        break;
+
                     default:
                         throw new NotImplementedException($"未實作的命令: {request.CommandName}");
                 }
