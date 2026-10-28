@@ -69,6 +69,13 @@ namespace RevitMCP.Core
             public double LengthFeet { get; set; }
         }
 
+        private class ExitEvaluation
+        {
+            public int ExitIndex { get; set; }
+            public int CoveredVertexCount { get; set; }
+            public CandidateEgressPath WorstPath { get; set; } = null!;
+        }
+
         private static readonly IReadOnlyList<EgressSharedParamSpec> RoomSharedParamSpecs = new List<EgressSharedParamSpec>
         {
             new EgressSharedParamSpec
@@ -321,6 +328,7 @@ namespace RevitMCP.Core
             double resolvedLevelElevationMeters = 0.0;
             long resolvedViewId = 0;
             string resolvedViewName = string.Empty;
+            var assignedRoomCounts = new Dictionary<long, int>();
 
             string resolvedOccupancyCategory = !string.IsNullOrWhiteSpace(occupancyCategory)
                 ? occupancyCategory!
@@ -480,14 +488,52 @@ namespace RevitMCP.Core
                                 }
                             }
 
-                            // 演算法篩選：
-                            // (1) 每個房間頂點 (StartIndex) 先找離它「最近」的出口路徑（代表該頂點的最佳逃生方向）
-                            // (2) 再從所有頂點的最佳逃生路徑中，保留「長度最長」的那一條（代表該房間最不利逃生距離）
-                            CandidateEgressPath? worstBestPath = interiorCandidates
-                                .GroupBy(c => c.StartIndex)
-                                .Select(g => g.OrderBy(c => c.LengthFeet).First())
-                                .OrderByDescending(c => c.LengthFeet)
+                            // 多出口比選演算法（每個空間僅擇定 1 個最近出口）：
+                            // (1) 依候選出口 (ExitIndex) 分組，計算「房內最遠角落 → 該出口」的室內路徑長度 L(R, E_k)
+                            //     （同一頂點對同一出口若有重複路徑取最短；再取各頂點中的最大值作為該出口之代表距離）
+                            // (2) 優先採用「可由最多房間角落以室內路徑到達」的出口，避免部分角落無法到達而低估距離
+                            // (3) 於上述出口中選取 L(R, E_k) 最短者作為該空間的唯一最近出口 E*，僅保留其最不利路徑
+                            List<ExitEvaluation> exitEvaluations = interiorCandidates
+                                .GroupBy(c => c.ExitIndex)
+                                .Select(g =>
+                                {
+                                    List<CandidateEgressPath> perVertexBest = g
+                                        .GroupBy(c => c.StartIndex)
+                                        .Select(vg => vg.OrderBy(c => c.LengthFeet).First())
+                                        .ToList();
+                                    return new ExitEvaluation
+                                    {
+                                        ExitIndex = g.Key,
+                                        CoveredVertexCount = perVertexBest.Count,
+                                        WorstPath = perVertexBest.OrderByDescending(c => c.LengthFeet).First()
+                                    };
+                                })
+                                .ToList();
+
+                            int maxCoverage = exitEvaluations.Count > 0
+                                ? exitEvaluations.Max(e => e.CoveredVertexCount)
+                                : 0;
+
+                            ExitEvaluation? nearestExitEval = exitEvaluations
+                                .Where(e => e.CoveredVertexCount == maxCoverage)
+                                .OrderBy(e => e.WorstPath.LengthFeet)
                                 .FirstOrDefault();
+
+                            CandidateEgressPath? worstBestPath = nearestExitEval?.WorstPath;
+
+                            var candidateExitSummaries = exitEvaluations
+                                .OrderBy(e => e.WorstPath.LengthFeet)
+                                .Select(e => new
+                                {
+                                    DoorId = exitTargets[e.ExitIndex].DoorId,
+                                    Label = exitTargets[e.ExitIndex].Label,
+                                    FarthestDistanceMeters = Math.Round(
+                                        UnitUtils.ConvertFromInternalUnits(e.WorstPath.LengthFeet, UnitTypeId.Meters), 2),
+                                    CoveredVertices = e.CoveredVertexCount,
+                                    TotalVertices = startPoints.Count,
+                                    IsNearest = nearestExitEval != null && e.ExitIndex == nearestExitEval.ExitIndex
+                                })
+                                .ToList();
 
                             // 其餘路徑全數 doc.Delete()
                             if (createdPaths != null)
@@ -567,6 +613,10 @@ namespace RevitMCP.Core
                             else
                                 nonCompliantCount++;
 
+                            assignedRoomCounts[chosenExit.DoorId] = assignedRoomCounts.TryGetValue(chosenExit.DoorId, out int prevCount)
+                                ? prevCount + 1
+                                : 1;
+
                             roomResults.Add(new
                             {
                                 RoomId = rawRoomId,
@@ -581,7 +631,9 @@ namespace RevitMCP.Core
                                 SegmentDimensionIds = segmentDimensionIds,
                                 IsCompliant = complianceStatus,
                                 TargetExit = chosenExit.Label,
-                                TargetExitDoorId = chosenExit.DoorId
+                                TargetExitDoorId = chosenExit.DoorId,
+                                NearestExitAutoSelected = exitTargets.Count > 1,
+                                CandidateExits = candidateExitSummaries
                             });
                         }
                     }
@@ -631,8 +683,10 @@ namespace RevitMCP.Core
                 ExitDoors = exitTargets.Select(t => new
                 {
                     DoorId = t.DoorId,
-                    Label = t.Label
+                    Label = t.Label,
+                    AssignedRoomCount = assignedRoomCounts.TryGetValue(t.DoorId, out int cnt) ? cnt : 0
                 }).ToList(),
+                MultiExitNearestSelection = exitTargets.Count > 1,
                 Results = roomResults
             };
         }

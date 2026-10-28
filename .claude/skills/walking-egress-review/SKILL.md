@@ -28,7 +28,7 @@ description: "依台灣《建築技術規則》第 93 條自動執行 Revit 房�
 ### Step 3：執行幾何路徑計算、轉折分段標註與外部視覺化總結報告
 呼叫 `audit_room_egress` 工具，傳入：
 - `roomIds`: 目標居室的 ElementId 陣列
-- `exitDoorIds`: 避難出口門的 ElementId 陣列
+- `exitDoorIds`: 避難出口門的 ElementId 陣列（可同時傳入多個候選出口；系統會為每個空間自動擇定「最遠角落步行距離最短」的唯一最近出口，圖面與報告每個空間只顯示 1 條動線與 1 筆檢討結果）
 - `maxAllowedMeters`: Step 2 判定之法規上限公尺數
 - `dimensionSegments`: （選填，預設 `true`）於逃生路徑每個轉折線段（長度 `>= 10cm`）上自動建立 Revit 原生線性尺寸標註（`Dimension`），過濾 `< 10cm` 的微小碎線段以避免標註重疊。
 - `occupancyCategory`: （選填）請傳入 Step 2 判定的法規適用類組與構造別說明（例如 `"B-2 辦公場所（第 93 條第 3 款｜主要構造：防火構造）"`），供外部視覺化報告呈現。

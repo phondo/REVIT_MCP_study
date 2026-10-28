@@ -2,7 +2,7 @@
 name: walking-egress-review
 description: "依台灣《建築技術規則》建築設計施工編第 93 條自動執行房間避難步行距離法規檢核、視覺化逃生路徑標註，並於指定圖紙建立檢討明細表與建築執照標準法規說明文字。觸發條件：步行距離、避難步行距離、第93條、逃生距離、避難路徑檢核、walking egress review、egress audit、PathOfTravel。"
 metadata:
-  version: "1.3"
+  version: "1.4"
   updated: "2026-10-28"
   created: "2026-10-22"
   references:
@@ -42,7 +42,10 @@ metadata:
 ### Step 3：執行幾何路徑計算、轉折分段標註與外部視覺化總結報告
 呼叫 `audit_room_egress` 工具，傳入：
 - `roomIds`: 目標居室的 ElementId 陣列
-- `exitDoorIds`: 避難出口門的 ElementId 陣列
+- `exitDoorIds`: 避難出口門的 ElementId 陣列（**可同時傳入多個候選出口**）
+  - **多出口自動擇近規則**：對每個空間，先分別計算「房內最遠角落（內縮 30cm）→ 各候選出口」之室內路徑長度 L(R, E_k)，優先採用可由最多角落以室內路徑到達之出口，再取 L(R, E_k) 最短者為該空間之**唯一最近出口 E\***。
+  - 每個空間在圖面上**只保留並繪製 1 條**通往 E\* 的 `PathOfTravel`、1 個標籤與該路徑之轉折尺寸標註；連往其他出口的候選路徑於同一 Transaction 內自動刪除。
+  - 回傳 `CandidateExits`（各候選出口距離比選明細，`IsNearest` 標示採用者）與 `ExitDoors[].AssignedRoomCount`（各出口被擇為最近出口的空間數）。
 - `maxAllowedMeters`: Step 2 判定之法規上限公尺數
 - `dimensionSegments`: （選填，預設 `true`）自動於逃生路徑每個轉折線段（長度 `>= 10cm`）上建立 Revit 原生線性尺寸標註（`Dimension`），極短轉折碎線段（`< 10cm`）仍計入總長但不單獨標註尺寸以維持圖面整潔。
 - `occupancyCategory`: （選填）Step 2 判定之法規適用類組與構造別說明文字（例如 `"B-2 辦公場所（第 93 條第 3 款｜主要構造：防火構造）"`），將顯示於外部視覺化總結報告之「法規適用類組」設定條件卡中。

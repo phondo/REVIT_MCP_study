@@ -22,7 +22,7 @@ export const auditRoomEgressInputSchema = z.object({
     exitDoorIds: z
         .array(z.number())
         .min(1, "exitDoorIds 至少需包含一個避難出口門 ElementId")
-        .describe("作為避難出口的門 ElementId 清單"),
+        .describe("作為避難出口的門 ElementId 清單（可傳入多個候選出口；每個房間會自動擇定最近出口，僅繪製 1 條動線）"),
     maxAllowedMeters: z
         .number()
         .positive("maxAllowedMeters 必須大於 0")
@@ -64,7 +64,7 @@ export const egressAuditTools: Tool[] = [
     {
         name: "audit_room_egress",
         description:
-            "執行房間避難步行距離法規檢核。自動建立房間避難共用參數、由房間外圈頂點內縮 0.3m 計算至各避難出口門的最佳逃生路徑並保留最不利路徑、寫入合格狀態參數、套用視圖紅綠線型覆寫、中點標籤、於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註，並自動於預設瀏覽器彈出外部視覺化總結報告（支援點選空間直接連動顯示 Revit 內該空間與逃生路徑）。",
+            "執行房間避難步行距離法規檢核。自動建立房間避難共用參數、由房間外圈頂點內縮 0.3m 計算至各避難出口門的室內逃生路徑，多出口時自動為每個房間擇定最近出口並僅保留 1 條最不利路徑、寫入合格狀態參數、套用視圖紅綠線型覆寫、中點標籤、於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註，並自動於預設瀏覽器彈出外部視覺化總結報告（支援點選空間直接連動顯示 Revit 內該空間與逃生路徑）。",
         inputSchema: {
             type: "object",
             properties: {
@@ -76,7 +76,7 @@ export const egressAuditTools: Tool[] = [
                 exitDoorIds: {
                     type: "array",
                     items: { type: "number" },
-                    description: "作為避難出口的門 ElementId 清單",
+                    description: "作為避難出口的門 ElementId 清單（可傳入多個候選出口；每個房間會自動擇定最近出口，僅繪製 1 條動線）",
                 },
                 maxAllowedMeters: {
                     type: "number",
@@ -629,9 +629,20 @@ export function buildEgressVisualReportHtml(data: any, port: number): string {
       exits.forEach(ex => {
         const div = document.createElement('div');
         div.className = 'exit-item';
-        div.innerHTML = '<span>🚪 ' + (ex.Label || ('Door #' + ex.DoorId)) + '</span><span>#' + ex.DoorId + '</span>';
+        const assigned = Number(ex.AssignedRoomCount || 0);
+        const assignedBadge = exits.length > 1
+          ? '<span class="chip" style="margin-left:6px;">最近出口採用 ' + assigned + ' 間</span>'
+          : '';
+        div.innerHTML = '<span>🚪 ' + (ex.Label || ('Door #' + ex.DoorId)) + assignedBadge + '</span><span>#' + ex.DoorId + '</span>';
         exitListEl.appendChild(div);
       });
+      if (exits.length > 1) {
+        const note = document.createElement('div');
+        note.className = 'cfg-sub';
+        note.style.marginTop = '6px';
+        note.textContent = '多出口模式：各空間自動擇定最近出口，每空間僅繪製 1 條動線';
+        exitListEl.appendChild(note);
+      }
 
       // 4. 法規適用類組
       document.getElementById('cfg-occupancy').textContent = RawData.OccupancyCategory || ('建築技術規則第 93 條（上限 ' + MaxAllowed + ' m）');
@@ -708,6 +719,20 @@ export function buildEgressVisualReportHtml(data: any, port: number): string {
           ? '餘裕 ' + (max - actual).toFixed(2) + ' m (' + pct + '%)'
           : '超標 +' + (actual - max).toFixed(2) + ' m (' + Math.round((actual / max) * 100) + '%)';
 
+        const candExits = Array.isArray(room.CandidateExits) ? room.CandidateExits : [];
+        const autoBadge = room.NearestExitAutoSelected
+          ? ' <span class="chip" style="color:#10b981;border-color:rgba(16,185,129,0.35);">自動擇近</span>'
+          : '';
+        const otherExitsHtml = candExits.length > 1
+          ? '<div style="color:var(--muted);margin-top:2px;">比選：' +
+              candExits.map(c =>
+                (c.IsNearest ? '<strong style="color:var(--fg);">' : '<span>') +
+                (c.Label || ('#' + c.DoorId)) + ' ' + Number(c.FarthestDistanceMeters || 0).toFixed(2) + 'm' +
+                (c.IsNearest ? '</strong>' : '</span>')
+              ).join(' ／ ') +
+            '</div>'
+          : '';
+
         tr.innerHTML =
           '<td>' +
             '<div style="display:flex;align-items:center;gap:10px;">' +
@@ -719,8 +744,9 @@ export function buildEgressVisualReportHtml(data: any, port: number): string {
             '</div>' +
           '</td>' +
           '<td>' +
-            '<div style="font-weight:600;">' + (room.TargetExit || '—') + '</div>' +
+            '<div style="font-weight:600;">' + (room.TargetExit || '—') + autoBadge + '</div>' +
             '<div style="color:var(--muted);">Path ID: ' + (room.PathOfTravelId || '—') + '</div>' +
+            otherExitsHtml +
           '</td>' +
           '<td><div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;">' + segHtml + '</div></td>' +
           '<td>' +
@@ -802,11 +828,17 @@ export function buildEgressVisualReportHtml(data: any, port: number): string {
         ? '本層各居室步行距離皆符合建築技術規則第93條之規定。'
         : '部分居室超出法定上限，需增設安全梯、調整走廊動線或檢討自動撒水設備放寬規定。';
 
+      const exitsForNote = Array.isArray(RawData.ExitDoors) ? RawData.ExitDoors : [];
+      const exitListText = exitsForNote.map(ex => ex.Label || ('#' + ex.DoorId)).join('、');
+      const methodText = exitsForNote.length > 1
+        ? '3. 檢討方式：以候選出口（' + exitListText + '）分別實測各居室最遠角落（內縮30cm基準點）經由實際可通行路徑（Path of Travel）之步行距離，並自動擇定距離最短之最近出口作為該居室檢討值。'
+        : '3. 檢討方式：由各居室最遠角落（內縮30cm基準點）經由實際可通行路徑（Path of Travel）至最近安全梯防火門中心點進行實測。';
+
       const noteText = [
         '【建築技術規則第93條：避難層以外樓層之步行距離檢討說明】',
         '1. 檢討依據：依《建築技術規則》建築設計施工編第93條規定辦理。',
         '2. 空間條件：' + (RawData.OccupancyCategory || '本樓層主要構造為防火構造') + '，檢討居室至直通樓梯（安全梯）之最大容許步行距離為 ' + MaxAllowed + ' 公尺。',
-        '3. 檢討方式：由各居室最遠角落（內縮30cm基準點）經由實際可通行路徑（Path of Travel）至最近安全梯防火門中心點進行實測。',
+        methodText,
         '4. 檢討結果綜整：',
         '   - 檢核居室總數：共 ' + totalRooms + ' 間',
         '   - 實測最大步行距離：' + (worst.RoomNumber || '') + ' ' + (worst.RoomName || '') + '（至 ' + (worst.TargetExit || '') + '），實測距離 L = ' + Number(worst.ActualDistanceMeters || 0).toFixed(2) + ' m（法規上限 ' + MaxAllowed + ' m）',
@@ -911,8 +943,15 @@ export function formatEgressAuditResponse(
             segLengths.length > 0
                 ? `｜各轉折線段：${segLengths.map((len) => `${len} m`).join(" + ")}（已標註 ${segDimIds.length} 段）`
                 : "";
+        const candExits: any[] = Array.isArray(item.CandidateExits) ? item.CandidateExits : [];
+        const candSummary =
+            candExits.length > 1
+                ? `｜多出口比選：${candExits
+                      .map((c) => `${c.IsNearest ? "★" : ""}${c.Label} ${c.FarthestDistanceMeters} m`)
+                      .join(" / ")}`
+                : "";
         lines.push(
-            `${badge} ${roomLabel}：實測最遠步行距離 ${item.ActualDistanceMeters} m / 上限 ${item.MaxAllowedMeters} m｜最佳逃生出口：${item.TargetExit}｜路徑 ID: ${item.PathOfTravelId}${item.TagId ? `｜標籤 ID: ${item.TagId}` : ""}${segSummary}`
+            `${badge} ${roomLabel}：實測最遠步行距離 ${item.ActualDistanceMeters} m / 上限 ${item.MaxAllowedMeters} m｜最近逃生出口：${item.TargetExit}｜路徑 ID: ${item.PathOfTravelId}${item.TagId ? `｜標籤 ID: ${item.TagId}` : ""}${segSummary}${candSummary}`
         );
     }
 
