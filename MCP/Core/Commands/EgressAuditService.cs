@@ -181,11 +181,19 @@ namespace RevitMCP.Core
                         }
 
                         // 4. 透過 InternalDefinition.SetAllowVaryBetweenGroups(doc, true) 開啟「值可以依群組實例而異」
+                        //    注意：Revit API 中 SpecTypeId.Length 等長度型別不支援 AllowVaryBetweenGroups，需捕獲 ArgumentException
                         SharedParameterElement createdElement = SharedParameterElement.Lookup(doc, spec.Guid);
                         InternalDefinition? internalDef = createdElement?.GetDefinition();
                         if (internalDef != null)
                         {
-                            internalDef.SetAllowVaryBetweenGroups(doc, true);
+                            try
+                            {
+                                internalDef.SetAllowVaryBetweenGroups(doc, true);
+                            }
+                            catch (Autodesk.Revit.Exceptions.ArgumentException)
+                            {
+                                // SpecTypeId.Length 不支援 VaryBetweenGroups，略過即可
+                            }
                         }
                     }
 
@@ -243,8 +251,9 @@ namespace RevitMCP.Core
             List<long> roomIds = parameters["roomIds"]?.Values<long>().ToList() ?? new List<long>();
             List<long> exitDoorIds = parameters["exitDoorIds"]?.Values<long>().ToList() ?? new List<long>();
             double maxAllowedMeters = parameters["maxAllowedMeters"]?.Value<double>() ?? 30.0;
+            bool dimensionSegments = parameters["dimensionSegments"]?.Value<bool>() ?? true;
 
-            return ExecuteEgressAudit(doc, roomIds, exitDoorIds, maxAllowedMeters);
+            return ExecuteEgressAudit(doc, roomIds, exitDoorIds, maxAllowedMeters, dimensionSegments);
         }
 
         /// <summary>
@@ -254,7 +263,8 @@ namespace RevitMCP.Core
             Document doc,
             IList<long> roomIds,
             IList<long> exitDoorIds,
-            double maxAllowedMeters)
+            double maxAllowedMeters,
+            bool dimensionSegments = true)
         {
             if (doc == null)
                 throw new ArgumentNullException(nameof(doc));
@@ -267,6 +277,7 @@ namespace RevitMCP.Core
 
             double maxAllowedFeet = UnitUtils.ConvertToInternalUnits(maxAllowedMeters, UnitTypeId.Meters);
             double insetFeet = UnitUtils.ConvertToInternalUnits(0.3, UnitTypeId.Meters);
+            double minSegmentFeet = UnitUtils.ConvertToInternalUnits(0.1, UnitTypeId.Meters); // 最小標註線段門檻 10cm (0.1m)
 
             // 解析所有出口門元素與座標
             var exitTargets = new List<ExitDoorTarget>();
@@ -466,6 +477,16 @@ namespace RevitMCP.Core
 
                         ElementId? createdTagId = TryCreatePathMidpointTag(doc, viewPlan, worstBestPath.Path);
 
+                        // 6. 針對逃生路徑每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註
+                        var (segmentLengthsMeters, segmentDimensionIds) = CreatePathSegmentDimensions(
+                            doc,
+                            viewPlan,
+                            worstBestPath.Path,
+                            planElevation,
+                            minSegmentFeet,
+                            dimensionSegments,
+                            isCompliant);
+
                         trans.Commit();
 
                         if (isCompliant)
@@ -483,6 +504,8 @@ namespace RevitMCP.Core
                             TagId = createdTagId?.GetIdValue(),
                             ActualDistanceMeters = actualDistMeters,
                             MaxAllowedMeters = maxAllowedMeters,
+                            SegmentLengthsMeters = segmentLengthsMeters,
+                            SegmentDimensionIds = segmentDimensionIds,
                             IsCompliant = complianceStatus,
                             TargetExit = chosenExit.Label,
                             TargetExitDoorId = chosenExit.DoorId
@@ -763,6 +786,143 @@ namespace RevitMCP.Core
             }
 
             return curves[curves.Count / 2].Evaluate(0.5, true);
+        }
+
+        /// <summary>
+        /// 針對逃生路徑的每個轉折線段提取長度，並對長度 >= minSegmentFeet (預設 10cm) 的線段建立 Revit 原生線性尺寸標註 (Dimension)。
+        /// </summary>
+        private static (List<double> SegmentLengthsMeters, List<long> SegmentDimensionIds) CreatePathSegmentDimensions(
+            Document doc,
+            ViewPlan viewPlan,
+            PathOfTravel path,
+            double planElevation,
+            double minSegmentFeet,
+            bool dimensionSegments,
+            bool isCompliant)
+        {
+            var segmentLengthsMeters = new List<double>();
+            var segmentDimensionIds = new List<long>();
+
+            IList<Curve>? curves = path.GetCurves();
+            if (curves == null || curves.Count == 0)
+            {
+                return (segmentLengthsMeters, segmentDimensionIds);
+            }
+
+            GraphicsStyle? invisibleStyle = dimensionSegments ? TryFindInvisibleLineStyle(doc) : null;
+            OverrideGraphicSettings dimOgs = new OverrideGraphicSettings();
+            dimOgs.SetProjectionLineColor(isCompliant ? new Color(0, 170, 60) : new Color(220, 20, 20));
+
+            double tickHalfLen = 0.25; // 垂直隱形參考短線半長（約 75mm）
+
+            foreach (Curve curve in curves)
+            {
+                if (curve == null || curve.Length <= 1e-6)
+                    continue;
+
+                double segMeters = Math.Round(
+                    UnitUtils.ConvertFromInternalUnits(curve.Length, UnitTypeId.Meters), 2);
+                segmentLengthsMeters.Add(segMeters);
+
+                // 過濾小於 10cm (minSegmentFeet) 的微小轉折碎線段，或未啟用分段標註時跳過
+                if (!dimensionSegments || curve.Length < minSegmentFeet)
+                    continue;
+
+                try
+                {
+                    XYZ p0 = curve.GetEndPoint(0);
+                    XYZ p1 = curve.GetEndPoint(1);
+                    XYZ start = new XYZ(p0.X, p0.Y, planElevation);
+                    XYZ end = new XYZ(p1.X, p1.Y, planElevation);
+
+                    double planarLength = start.DistanceTo(end);
+                    if (planarLength < minSegmentFeet)
+                        continue;
+
+                    XYZ dir = (end - start).Normalize();
+                    XYZ perp = new XYZ(-dir.Y, dir.X, 0);
+                    if (perp.GetLength() <= 1e-6)
+                    {
+                        perp = XYZ.BasisY;
+                    }
+                    else
+                    {
+                        perp = perp.Normalize();
+                    }
+
+                    // 於轉折線段兩端建立垂直於線段方向的微短參考 DetailCurve（套用 <Invisible lines> 隱藏線樣式）
+                    DetailCurve dc1 = doc.Create.NewDetailCurve(
+                        viewPlan,
+                        Line.CreateBound(start - perp * tickHalfLen, start + perp * tickHalfLen));
+                    DetailCurve dc2 = doc.Create.NewDetailCurve(
+                        viewPlan,
+                        Line.CreateBound(end - perp * tickHalfLen, end + perp * tickHalfLen));
+
+                    if (invisibleStyle != null)
+                    {
+                        try
+                        {
+                            dc1.LineStyle = invisibleStyle;
+                            dc2.LineStyle = invisibleStyle;
+                        }
+                        catch
+                        {
+                            // 若線樣式套用失敗則忽略
+                        }
+                    }
+
+                    ReferenceArray refArray = new ReferenceArray();
+                    refArray.Append(dc1.GeometryCurve.Reference);
+                    refArray.Append(dc2.GeometryCurve.Reference);
+
+                    // 尺寸線直接建立於逃生路徑轉折線段上
+                    Line dimLine = Line.CreateBound(start, end);
+                    Dimension? dim = doc.Create.NewDimension(viewPlan, dimLine, refArray);
+                    if (dim != null)
+                    {
+                        viewPlan.SetElementOverrides(dim.Id, dimOgs);
+                        segmentDimensionIds.Add(dim.Id.GetIdValue());
+                    }
+                }
+                catch
+                {
+                    // 單一線段標註失敗不中斷整體檢核與其餘線段標註
+                }
+            }
+
+            return (segmentLengthsMeters, segmentDimensionIds);
+        }
+
+        private static GraphicsStyle? TryFindInvisibleLineStyle(Document doc)
+        {
+            try
+            {
+                Category? invisibleCat = Category.GetCategory(doc, BuiltInCategory.OST_InvisibleLines);
+                GraphicsStyle? style = invisibleCat?.GetGraphicsStyle(GraphicsStyleType.Projection);
+                if (style != null)
+                    return style;
+
+                Category? linesCat = doc.Settings.Categories.get_Item(BuiltInCategory.OST_Lines);
+                if (linesCat != null)
+                {
+                    foreach (Category subCat in linesCat.SubCategories)
+                    {
+                        string name = subCat.Name ?? string.Empty;
+                        if (name.IndexOf("Invisible", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            name.IndexOf("不可見", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            name.IndexOf("隱藏", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            return subCat.GetGraphicsStyle(GraphicsStyleType.Projection);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略查詢例外
+            }
+
+            return null;
         }
     }
 }

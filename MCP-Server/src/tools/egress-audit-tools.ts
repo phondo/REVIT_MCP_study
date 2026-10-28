@@ -21,6 +21,11 @@ export const auditRoomEgressInputSchema = z.object({
         .number()
         .positive("maxAllowedMeters 必須大於 0")
         .describe("法規容許最大步行距離公尺數"),
+    dimensionSegments: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("是否自動於逃生路徑每個轉折線段（>= 10cm）上建立 Revit 原生線性尺寸標註（預設為 true）"),
 });
 
 export type AuditRoomEgressInput = z.infer<typeof auditRoomEgressInputSchema>;
@@ -44,7 +49,7 @@ export const egressAuditTools: Tool[] = [
     {
         name: "audit_room_egress",
         description:
-            "執行房間避難步行距離法規檢核。自動建立房間避難共用參數、由房間外圈頂點內縮 0.3m 計算至各避難出口門的最佳逃生路徑並保留最不利路徑、寫入合格狀態參數、套用視圖紅綠線型覆寫與中點標籤。",
+            "執行房間避難步行距離法規檢核。自動建立房間避難共用參數、由房間外圈頂點內縮 0.3m 計算至各避難出口門的最佳逃生路徑並保留最不利路徑、寫入合格狀態參數、套用視圖紅綠線型覆寫、中點標籤，並於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註。",
         inputSchema: {
             type: "object",
             properties: {
@@ -61,6 +66,11 @@ export const egressAuditTools: Tool[] = [
                 maxAllowedMeters: {
                     type: "number",
                     description: "法規容許最大步行距離公尺數",
+                },
+                dimensionSegments: {
+                    type: "boolean",
+                    description:
+                        "是否自動於逃生路徑每個轉折線段（>= 10cm）上建立 Revit 原生線性尺寸標註（預設 true）",
                 },
             },
             required: ["roomIds", "exitDoorIds", "maxAllowedMeters"],
@@ -118,8 +128,14 @@ export function formatEgressAuditResponse(data: any): string {
         }
 
         const badge = item.IsCompliant === "合格" ? "✅ [合格]" : "🚨 [不合格]";
+        const segLengths: number[] = Array.isArray(item.SegmentLengthsMeters) ? item.SegmentLengthsMeters : [];
+        const segDimIds: number[] = Array.isArray(item.SegmentDimensionIds) ? item.SegmentDimensionIds : [];
+        const segSummary =
+            segLengths.length > 0
+                ? `｜各轉折線段：${segLengths.map((len) => `${len} m`).join(" + ")}（已標註 ${segDimIds.length} 段）`
+                : "";
         lines.push(
-            `${badge} ${roomLabel}：實測最遠步行距離 ${item.ActualDistanceMeters} m / 上限 ${item.MaxAllowedMeters} m｜最佳逃生出口：${item.TargetExit}｜路徑 ID: ${item.PathOfTravelId}${item.TagId ? `｜標籤 ID: ${item.TagId}` : ""}`
+            `${badge} ${roomLabel}：實測最遠步行距離 ${item.ActualDistanceMeters} m / 上限 ${item.MaxAllowedMeters} m｜最佳逃生出口：${item.TargetExit}｜路徑 ID: ${item.PathOfTravelId}${item.TagId ? `｜標籤 ID: ${item.TagId}` : ""}${segSummary}`
         );
     }
 

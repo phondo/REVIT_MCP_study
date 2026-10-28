@@ -2,8 +2,8 @@
 name: walking-egress-review
 description: "依台灣《建築技術規則》建築設計施工編第 93 條自動執行房間避難步行距離法規檢核、視覺化逃生路徑標註，並於指定圖紙建立檢討明細表與建築執照標準法規說明文字。觸發條件：步行距離、避難步行距離、第93條、逃生距離、避難路徑檢核、walking egress review、egress audit、PathOfTravel。"
 metadata:
-  version: "1.0"
-  updated: "2026-10-22"
+  version: "1.1"
+  updated: "2026-10-28"
   created: "2026-10-22"
   references:
     - "建築技術規則建築設計施工編 §93"
@@ -44,8 +44,9 @@ metadata:
 - `roomIds`: 目標居室的 ElementId 陣列
 - `exitDoorIds`: 避難出口門的 ElementId 陣列
 - `maxAllowedMeters`: Step 2 判定之法規上限公尺數
+- `dimensionSegments`: （選填，預設 `true`）是否自動於逃生路徑每個轉折線段（長度 `>= 10cm`）上建立 Revit 原生線性尺寸標註（`Dimension`），極短轉折碎線段（`< 10cm`）仍計入總長但不單獨標註尺寸以維持圖面整潔。
 
-等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、對應出口（`TargetExit`）與合格狀態（`IsCompliant`）。
+等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度陣列（`SegmentLengthsMeters`）、新建轉折尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）與合格狀態（`IsCompliant`）。
 
 ### Step 4：撰寫正式法規檢討文字並輸出至圖紙
 收到 `audit_room_egress` 的回傳數據後，自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具將明細表與文字放置到指定圖紙（如 `sheetNumber: "A-101"`）。

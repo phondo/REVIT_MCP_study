@@ -30,8 +30,9 @@ description: "依台灣《建築技術規則》第 93 條自動執行 Revit 房�
 - `roomIds`: 目標居室的 ElementId 陣列
 - `exitDoorIds`: 避難出口門的 ElementId 陣列
 - `maxAllowedMeters`: Step 2 判定之法規上限公尺數
+- `dimensionSegments`: （選填，預設 `true`）於逃生路徑每個轉折線段（長度 `>= 10cm`）上自動建立 Revit 原生線性尺寸標註（`Dimension`），過濾 `< 10cm` 的微小碎線段以避免標註重疊。
 
-等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、對應出口（`TargetExit`）與合格狀態（`IsCompliant`）。
+等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度（`SegmentLengthsMeters`）、各段尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）與合格狀態（`IsCompliant`）。
 
 ### Step 4：撰寫正式法規檢討文字並輸出至圖紙
 收到 `audit_room_egress` 的回傳數據後，請自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具將明細表與文字放置到指定圖紙（如 `sheetNumber: "A-101"`）。
@@ -58,7 +59,7 @@ description: "依台灣《建築技術規則》第 93 條自動執行 Revit 房�
 | `get_active_view` | 取得當前平面視圖與樓層資訊 |
 | `get_rooms_by_level` | 取得目標樓層之房間清單，篩選面積 > 0 之居室並排除管道間／機電空間／樓梯間 |
 | `query_elements` | 查詢視圖或樓層中的門元件（`Doors`）及其 `Mark` / `Comments` 以識別避難出口門 |
-| `audit_room_egress` | 自動建立房間避難共用參數、由房間頂點內縮 0.3m 計算最不利逃生路徑、寫入參數並進行紅綠覆寫與中點標籤 |
+| `audit_room_egress` | 自動建立房間避難共用參數、由房間頂點內縮 0.3m 計算最不利逃生路徑、寫入參數、進行紅綠覆寫與中點標籤，並於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註 |
 | `generate_egress_sheet_note` | 於目標圖紙自動建立「避難步行距離檢討表」明細表並排版法規檢討說明文字 |
 
 ## Reference
