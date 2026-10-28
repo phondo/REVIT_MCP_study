@@ -2,7 +2,7 @@
 name: walking-egress-review
 description: "依台灣《建築技術規則》建築設計施工編第 93 條自動執行房間避難步行距離法規檢核、視覺化逃生路徑標註，並於指定圖紙建立檢討明細表與建築執照標準法規說明文字。觸發條件：步行距離、避難步行距離、第93條、逃生距離、避難路徑檢核、walking egress review、egress audit、PathOfTravel。"
 metadata:
-  version: "1.2"
+  version: "1.3"
   updated: "2026-10-28"
   created: "2026-10-22"
   references:
@@ -49,6 +49,10 @@ metadata:
 - `openReport`: （選填，預設 `true`）檢核完成後自動透過本機輕量橋接伺服器（`127.0.0.1`）於系統預設瀏覽器彈出**外部視覺化總結報告**：
   1. **STEP 1 設定條件與檢核基準**：依序顯示「檢討樓層」、「檢討房間名稱」、「檢討出口位置」、「法規適用類組」四張設定條件卡片與統計 KPI。
   2. **STEP 2 各空間最遠路徑分析結果與 Revit 即時連動**：列出每個空間的最遠路徑長度、各轉折線段尺寸明細、對應出口及檢討是否通過；點選任一結果空間列，將透過本機橋接自動呼叫 `select_element` 與 `zoom_to_element`，直接於 Revit 視圖中縮放並高亮顯示該空間與逃生路徑。
+- **全程室內尋路保障機制（三道防線）**：
+  1. **出口門目標點向室內側內縮**：自動依門扇方向與 `doc.GetRoomAtPoint` 將逃生終點鎖定於室內空間側，防止路徑由建築物外皮接近。
+  2. **非目標建築外門計算期臨時阻斷**：自動識別樓層中非屬 `exitDoorIds` 之建築外門（含帷幕牆外門），於 `PathOfTravel.CreateMapped` 計算期間在室外側建立臨時 U 型阻斷牆（算完立即清除），強制尋路引擎 100% 沿室內走廊與室內門行進，不會穿出中庭或室外空地。
+  3. **路徑線段全程室內幾何檢核**：對每條候選路徑線段進行 `doc.GetRoomAtPoint` 連續取樣驗證，自動剔除任何跨越建築外部無效區段之路徑。
 
 等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度陣列（`SegmentLengthsMeters`）、新建轉折尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）、合格狀態（`IsCompliant`）與外部視覺化報告網址。
 

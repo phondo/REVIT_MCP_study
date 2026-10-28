@@ -280,8 +280,9 @@ namespace RevitMCP.Core
             double maxAllowedFeet = UnitUtils.ConvertToInternalUnits(maxAllowedMeters, UnitTypeId.Meters);
             double insetFeet = UnitUtils.ConvertToInternalUnits(0.3, UnitTypeId.Meters);
             double minSegmentFeet = UnitUtils.ConvertToInternalUnits(0.1, UnitTypeId.Meters); // 最小標註線段門檻 10cm (0.1m)
+            HashSet<long> targetExitDoorIdSet = new HashSet<long>(exitDoorIds);
 
-            // 解析所有出口門元素與座標
+            // 解析所有出口門元素與座標（步驟 1：將出口門目標點向室內側微幅內縮，確保終點位於室內空間）
             var exitTargets = new List<ExitDoorTarget>();
             foreach (long rawDoorId in exitDoorIds)
             {
@@ -290,7 +291,7 @@ namespace RevitMCP.Core
                 if (doorElem == null)
                     continue;
 
-                XYZ? doorPt = GetElementCenterPoint(doorElem);
+                XYZ? doorPt = GetInteriorDoorTargetPoint(doc, doorElem, insetFeet);
                 if (doorPt == null)
                     continue;
 
@@ -329,6 +330,22 @@ namespace RevitMCP.Core
                         ? "第 93 條第 2 款（醫療／住宿／無窗居室／特定場所）"
                         : "第 93 條第 3 款（一般防火構造居室）"));
 
+            // 預先收集有效 Room 與對應平面視圖，以便統一建立非目標外門臨時阻斷牆與清理舊路徑
+            var validRooms = new List<Room>();
+            ViewPlan? primaryViewPlan = null;
+            foreach (long rawRoomId in roomIds)
+            {
+                Room? r = doc.GetElement(((IdType)rawRoomId).ToElementId()) as Room;
+                if (r != null && r.Area > 0)
+                {
+                    validRooms.Add(r);
+                    if (primaryViewPlan == null)
+                    {
+                        primaryViewPlan = ResolveFloorPlanForRoom(doc, r);
+                    }
+                }
+            }
+
             using (TransactionGroup tg = new TransactionGroup(doc, "房間避難路徑檢核"))
             {
                 tg.Start();
@@ -336,204 +353,263 @@ namespace RevitMCP.Core
                 // 1. 先確保 OST_Rooms 的 4 個共用參數已建立並綁定
                 EnsureRoomSharedParameters(doc);
 
-                // 2. 逐一檢核每個 Room
-                foreach (long rawRoomId in roomIds)
+                // 2. 清理受檢房間先前的舊 PathOfTravel 與分段標註輔助線，並於非目標建築外門建立臨時阻斷牆（步驟 2）
+                List<ElementId> tempBarrierWallIds = new List<ElementId>();
+                List<XYZ> levelDoorCenters = new List<XYZ>();
+                if (primaryViewPlan != null)
                 {
-                    ElementId roomElemId = ((IdType)rawRoomId).ToElementId();
-                    Room? room = doc.GetElement(roomElemId) as Room;
+                    double primaryElevation = primaryViewPlan.GenLevel != null
+                        ? primaryViewPlan.GenLevel.Elevation
+                        : (validRooms.Count > 0
+                            ? (doc.GetElement(validRooms[0].LevelId) as Level)?.Elevation ?? 0.0
+                            : 0.0);
 
-                    if (room == null || room.Area <= 0)
+                    using (Transaction prepTrans = new Transaction(doc, "準備室內避難尋路環境"))
                     {
-                        failedCount++;
-                        roomResults.Add(new
-                        {
-                            RoomId = rawRoomId,
-                            Success = false,
-                            Error = room == null ? "找不到該房間元素" : "房間未封閉或面積為 0"
-                        });
-                        continue;
+                        prepTrans.Start();
+                        CleanupPreviousRoomAuditElements(doc, primaryViewPlan, validRooms, primaryElevation);
+                        tempBarrierWallIds = CreateTemporaryExteriorDoorBarriers(
+                            doc,
+                            primaryViewPlan,
+                            targetExitDoorIdSet,
+                            primaryElevation,
+                            out levelDoorCenters);
+                        doc.Regenerate();
+                        prepTrans.Commit();
                     }
+                }
 
-                    ViewPlan? viewPlan = ResolveFloorPlanForRoom(doc, room);
-                    if (viewPlan == null)
+                try
+                {
+                    // 3. 逐一檢核每個 Room
+                    foreach (long rawRoomId in roomIds)
                     {
-                        failedCount++;
-                        roomResults.Add(new
+                        ElementId roomElemId = ((IdType)rawRoomId).ToElementId();
+                        Room? room = doc.GetElement(roomElemId) as Room;
+
+                        if (room == null || room.Area <= 0)
                         {
-                            RoomId = rawRoomId,
-                            RoomName = room.Name,
-                            Success = false,
-                            Error = "找不到對應樓層的平面視圖 (ViewPlan)"
-                        });
-                        continue;
-                    }
-
-                    double planElevation = viewPlan.GenLevel != null
-                        ? viewPlan.GenLevel.Elevation
-                        : (doc.GetElement(room.LevelId) as Level)?.Elevation ?? 0.0;
-
-                    if (resolvedViewId == 0)
-                    {
-                        resolvedViewId = viewPlan.Id.GetIdValue();
-                        resolvedViewName = viewPlan.Name ?? string.Empty;
-                        Level? lvl = viewPlan.GenLevel ?? (doc.GetElement(room.LevelId) as Level);
-                        resolvedLevelName = lvl?.Name ?? resolvedViewName;
-                        resolvedLevelElevationMeters = Math.Round(
-                            UnitUtils.ConvertFromInternalUnits(planElevation, UnitTypeId.Meters), 2);
-                    }
-
-                    List<XYZ> startPoints = GetInsetRoomBoundaryVertices(room, insetFeet, planElevation);
-                    if (startPoints.Count == 0)
-                    {
-                        failedCount++;
-                        roomResults.Add(new
-                        {
-                            RoomId = rawRoomId,
-                            RoomName = room.Name,
-                            Success = false,
-                            Error = "無法取得房間外圈頂點或內縮點"
-                        });
-                        continue;
-                    }
-
-                    List<XYZ> exitPointsOnPlan = exitTargets
-                        .Select(t => new XYZ(t.Point.X, t.Point.Y, planElevation))
-                        .ToList();
-
-                    using (Transaction trans = new Transaction(doc, $"避難路徑檢核 - {room.Name}"))
-                    {
-                        trans.Start();
-
-                        IList<PathOfTravel> createdPaths = PathOfTravel.CreateMapped(viewPlan, startPoints, exitPointsOnPlan);
-
-                        var validCandidates = new List<CandidateEgressPath>();
-                        if (createdPaths != null)
-                        {
-                            foreach (PathOfTravel p in createdPaths)
+                            failedCount++;
+                            roomResults.Add(new
                             {
-                                if (p == null || !p.IsValidObject)
-                                    continue;
-
-                                double lengthFeet = GetPathOfTravelLengthFeet(p);
-                                if (lengthFeet <= 1e-6)
-                                    continue;
-
-                                int startIdx = FindClosestPointIndex(p.PathStart, startPoints);
-                                int exitIdx = FindClosestPointIndex(p.PathEnd, exitPointsOnPlan);
-
-                                validCandidates.Add(new CandidateEgressPath
-                                {
-                                    Path = p,
-                                    StartIndex = startIdx,
-                                    ExitIndex = exitIdx,
-                                    LengthFeet = lengthFeet
-                                });
-                            }
+                                RoomId = rawRoomId,
+                                Success = false,
+                                Error = room == null ? "找不到該房間元素" : "房間未封閉或面積為 0"
+                            });
+                            continue;
                         }
 
-                        // 演算法篩選：
-                        // (1) 每個房間頂點 (StartIndex) 先找離它「最近」的出口路徑（代表該頂點的最佳逃生方向）
-                        // (2) 再從所有頂點的最佳逃生路徑中，保留「長度最長」的那一條（代表該房間最不利逃生距離）
-                        CandidateEgressPath? worstBestPath = validCandidates
-                            .GroupBy(c => c.StartIndex)
-                            .Select(g => g.OrderBy(c => c.LengthFeet).First())
-                            .OrderByDescending(c => c.LengthFeet)
-                            .FirstOrDefault();
-
-                        // 其餘路徑全數 doc.Delete()
-                        if (createdPaths != null)
+                        ViewPlan? viewPlan = ResolveFloorPlanForRoom(doc, room);
+                        if (viewPlan == null)
                         {
-                            ElementId keepId = worstBestPath?.Path.Id ?? ElementId.InvalidElementId;
-                            foreach (PathOfTravel p in createdPaths)
-                            {
-                                if (p != null && p.IsValidObject && p.Id != keepId)
-                                {
-                                    doc.Delete(p.Id);
-                                }
-                            }
-                        }
-
-                        if (worstBestPath == null)
-                        {
-                            trans.Commit();
                             failedCount++;
                             roomResults.Add(new
                             {
                                 RoomId = rawRoomId,
                                 RoomName = room.Name,
-                                RoomNumber = room.Number,
                                 Success = false,
-                                Error = "PathOfTravel.CreateMapped 未能計算出任何有效路徑"
+                                Error = "找不到對應樓層的平面視圖 (ViewPlan)"
                             });
                             continue;
                         }
 
-                        double actualDistFeet = worstBestPath.LengthFeet;
-                        double actualDistMeters = Math.Round(
-                            UnitUtils.ConvertFromInternalUnits(actualDistFeet, UnitTypeId.Meters), 2);
-                        bool isCompliant = actualDistFeet <= maxAllowedFeet + 1e-6;
-                        string complianceStatus = isCompliant ? "合格" : "不合格";
-                        ExitDoorTarget chosenExit = exitTargets[worstBestPath.ExitIndex];
+                        double planElevation = viewPlan.GenLevel != null
+                            ? viewPlan.GenLevel.Elevation
+                            : (doc.GetElement(room.LevelId) as Level)?.Elevation ?? 0.0;
 
-                        // 4. 寫入房間的 4 個 GUID 共用參數（長度以 Internal Feet 寫入）
-                        SetRoomParameter(room, GuidActualDist, actualDistFeet);
-                        SetRoomParameter(room, GuidMaxAllowed, maxAllowedFeet);
-                        SetRoomParameter(room, GuidIsCompliant, complianceStatus);
-                        SetRoomParameter(room, GuidTargetExit, chosenExit.Label);
-
-                        // 5. 使用 View.SetElementOverrides 上色並嘗試建立 IndependentTag
-                        OverrideGraphicSettings ogs = new OverrideGraphicSettings();
-                        if (isCompliant)
+                        if (resolvedViewId == 0)
                         {
-                            ogs.SetProjectionLineColor(new Color(0, 170, 60));
-                            ogs.SetProjectionLineWeight(5);
+                            resolvedViewId = viewPlan.Id.GetIdValue();
+                            resolvedViewName = viewPlan.Name ?? string.Empty;
+                            Level? lvl = viewPlan.GenLevel ?? (doc.GetElement(room.LevelId) as Level);
+                            resolvedLevelName = lvl?.Name ?? resolvedViewName;
+                            resolvedLevelElevationMeters = Math.Round(
+                                UnitUtils.ConvertFromInternalUnits(planElevation, UnitTypeId.Meters), 2);
                         }
-                        else
+
+                        List<XYZ> startPoints = GetInsetRoomBoundaryVertices(room, insetFeet, planElevation);
+                        if (startPoints.Count == 0)
                         {
-                            ogs.SetProjectionLineColor(new Color(220, 20, 20));
-                            ogs.SetProjectionLineWeight(7);
-                            if (dashPatternId != ElementId.InvalidElementId)
+                            failedCount++;
+                            roomResults.Add(new
                             {
-                                ogs.SetProjectionLinePatternId(dashPatternId);
-                            }
+                                RoomId = rawRoomId,
+                                RoomName = room.Name,
+                                Success = false,
+                                Error = "無法取得房間外圈頂點或內縮點"
+                            });
+                            continue;
                         }
-                        viewPlan.SetElementOverrides(worstBestPath.Path.Id, ogs);
 
-                        ElementId? createdTagId = TryCreatePathMidpointTag(doc, viewPlan, worstBestPath.Path);
+                        List<XYZ> exitPointsOnPlan = exitTargets
+                            .Select(t => new XYZ(t.Point.X, t.Point.Y, planElevation))
+                            .ToList();
 
-                        // 6. 針對逃生路徑每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註
-                        var (segmentLengthsMeters, segmentDimensionIds) = CreatePathSegmentDimensions(
-                            doc,
-                            viewPlan,
-                            worstBestPath.Path,
-                            planElevation,
-                            minSegmentFeet,
-                            dimensionSegments,
-                            isCompliant);
-
-                        trans.Commit();
-
-                        if (isCompliant)
-                            compliantCount++;
-                        else
-                            nonCompliantCount++;
-
-                        roomResults.Add(new
+                        using (Transaction trans = new Transaction(doc, $"避難路徑檢核 - {room.Name}"))
                         {
-                            RoomId = rawRoomId,
-                            RoomName = room.Name,
-                            RoomNumber = room.Number,
-                            Success = true,
-                            PathOfTravelId = worstBestPath.Path.Id.GetIdValue(),
-                            TagId = createdTagId?.GetIdValue(),
-                            ActualDistanceMeters = actualDistMeters,
-                            MaxAllowedMeters = maxAllowedMeters,
-                            SegmentLengthsMeters = segmentLengthsMeters,
-                            SegmentDimensionIds = segmentDimensionIds,
-                            IsCompliant = complianceStatus,
-                            TargetExit = chosenExit.Label,
-                            TargetExitDoorId = chosenExit.DoorId
-                        });
+                            trans.Start();
+
+                            IList<PathOfTravel> createdPaths = PathOfTravel.CreateMapped(viewPlan, startPoints, exitPointsOnPlan);
+
+                            var interiorCandidates = new List<CandidateEgressPath>();
+                            if (createdPaths != null)
+                            {
+                                foreach (PathOfTravel p in createdPaths)
+                                {
+                                    if (p == null || !p.IsValidObject)
+                                        continue;
+
+                                    double lengthFeet = GetPathOfTravelLengthFeet(p);
+                                    if (lengthFeet <= 1e-6)
+                                        continue;
+
+                                    // 步驟 3：檢核路徑是否全程位於建築物室內空間（排除任何穿越室外空地／中庭之路徑）
+                                    if (!IsPathStrictlyInterior(doc, p, planElevation, levelDoorCenters))
+                                        continue;
+
+                                    int startIdx = FindClosestPointIndex(p.PathStart, startPoints);
+                                    int exitIdx = FindClosestPointIndex(p.PathEnd, exitPointsOnPlan);
+
+                                    interiorCandidates.Add(new CandidateEgressPath
+                                    {
+                                        Path = p,
+                                        StartIndex = startIdx,
+                                        ExitIndex = exitIdx,
+                                        LengthFeet = lengthFeet
+                                    });
+                                }
+                            }
+
+                            // 演算法篩選：
+                            // (1) 每個房間頂點 (StartIndex) 先找離它「最近」的出口路徑（代表該頂點的最佳逃生方向）
+                            // (2) 再從所有頂點的最佳逃生路徑中，保留「長度最長」的那一條（代表該房間最不利逃生距離）
+                            CandidateEgressPath? worstBestPath = interiorCandidates
+                                .GroupBy(c => c.StartIndex)
+                                .Select(g => g.OrderBy(c => c.LengthFeet).First())
+                                .OrderByDescending(c => c.LengthFeet)
+                                .FirstOrDefault();
+
+                            // 其餘路徑全數 doc.Delete()
+                            if (createdPaths != null)
+                            {
+                                ElementId keepId = worstBestPath?.Path.Id ?? ElementId.InvalidElementId;
+                                foreach (PathOfTravel p in createdPaths)
+                                {
+                                    if (p != null && p.IsValidObject && p.Id != keepId)
+                                    {
+                                        doc.Delete(p.Id);
+                                    }
+                                }
+                            }
+
+                            if (worstBestPath == null)
+                            {
+                                trans.Commit();
+                                failedCount++;
+                                roomResults.Add(new
+                                {
+                                    RoomId = rawRoomId,
+                                    RoomName = room.Name,
+                                    RoomNumber = room.Number,
+                                    Success = false,
+                                    Error = "PathOfTravel.CreateMapped 未能計算出任何全程位於室內的逃生路徑"
+                                });
+                                continue;
+                            }
+
+                            double actualDistFeet = worstBestPath.LengthFeet;
+                            double actualDistMeters = Math.Round(
+                                UnitUtils.ConvertFromInternalUnits(actualDistFeet, UnitTypeId.Meters), 2);
+                            bool isCompliant = actualDistFeet <= maxAllowedFeet + 1e-6;
+                            string complianceStatus = isCompliant ? "合格" : "不合格";
+                            ExitDoorTarget chosenExit = exitTargets[worstBestPath.ExitIndex];
+
+                            // 4. 寫入房間的 4 個 GUID 共用參數（長度以 Internal Feet 寫入）
+                            SetRoomParameter(room, GuidActualDist, actualDistFeet);
+                            SetRoomParameter(room, GuidMaxAllowed, maxAllowedFeet);
+                            SetRoomParameter(room, GuidIsCompliant, complianceStatus);
+                            SetRoomParameter(room, GuidTargetExit, chosenExit.Label);
+
+                            // 5. 使用 View.SetElementOverrides 上色並嘗試建立 IndependentTag
+                            OverrideGraphicSettings ogs = new OverrideGraphicSettings();
+                            if (isCompliant)
+                            {
+                                ogs.SetProjectionLineColor(new Color(0, 170, 60));
+                                ogs.SetProjectionLineWeight(5);
+                            }
+                            else
+                            {
+                                ogs.SetProjectionLineColor(new Color(220, 20, 20));
+                                ogs.SetProjectionLineWeight(7);
+                                if (dashPatternId != ElementId.InvalidElementId)
+                                {
+                                    ogs.SetProjectionLinePatternId(dashPatternId);
+                                }
+                            }
+                            viewPlan.SetElementOverrides(worstBestPath.Path.Id, ogs);
+
+                            ElementId? createdTagId = TryCreatePathMidpointTag(doc, viewPlan, worstBestPath.Path);
+
+                            // 6. 針對逃生路徑每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註
+                            var (segmentLengthsMeters, segmentDimensionIds) = CreatePathSegmentDimensions(
+                                doc,
+                                viewPlan,
+                                worstBestPath.Path,
+                                planElevation,
+                                minSegmentFeet,
+                                dimensionSegments,
+                                isCompliant);
+
+                            trans.Commit();
+
+                            if (isCompliant)
+                                compliantCount++;
+                            else
+                                nonCompliantCount++;
+
+                            roomResults.Add(new
+                            {
+                                RoomId = rawRoomId,
+                                RoomName = room.Name,
+                                RoomNumber = room.Number,
+                                Success = true,
+                                PathOfTravelId = worstBestPath.Path.Id.GetIdValue(),
+                                TagId = createdTagId?.GetIdValue(),
+                                ActualDistanceMeters = actualDistMeters,
+                                MaxAllowedMeters = maxAllowedMeters,
+                                SegmentLengthsMeters = segmentLengthsMeters,
+                                SegmentDimensionIds = segmentDimensionIds,
+                                IsCompliant = complianceStatus,
+                                TargetExit = chosenExit.Label,
+                                TargetExitDoorId = chosenExit.DoorId
+                            });
+                        }
+                    }
+                }
+                finally
+                {
+                    // 移除尋路期間建立的非目標外門臨時阻斷牆，確保原建築模型不留任何臨時幾何
+                    if (tempBarrierWallIds.Count > 0)
+                    {
+                        using (Transaction cleanupTrans = new Transaction(doc, "移除臨時外門阻斷牆"))
+                        {
+                            cleanupTrans.Start();
+                            foreach (ElementId wid in tempBarrierWallIds)
+                            {
+                                try
+                                {
+                                    if (doc.GetElement(wid) != null)
+                                    {
+                                        doc.Delete(wid);
+                                    }
+                                }
+                                catch
+                                {
+                                    // 忽略單一臨時牆刪除失敗
+                                }
+                            }
+                            cleanupTrans.Commit();
+                        }
                     }
                 }
 
@@ -701,6 +777,426 @@ namespace RevitMCP.Core
                 return (bbox.Min + bbox.Max) * 0.5;
 
             return null;
+        }
+
+        /// <summary>
+        /// 步驟 1：取得出口門位於「室內空間側」的目標點，避免目標點落在門框外皮或室外側而導致尋路從建築外部接近。
+        /// </summary>
+        private static XYZ? GetInteriorDoorTargetPoint(Document doc, Element doorElem, double insetFeet)
+        {
+            XYZ? basePt = GetElementCenterPoint(doorElem);
+            if (basePt == null)
+                return null;
+
+            double levelZ = basePt.Z;
+            if (doorElem.LevelId != ElementId.InvalidElementId && doc.GetElement(doorElem.LevelId) is Level lvl)
+            {
+                levelZ = lvl.Elevation;
+            }
+            double testZ = levelZ + 2.0; // 抬升約 60cm 以確保落在 3D Room 體積內
+
+            if (doorElem is FamilyInstance fi)
+            {
+                XYZ facing = new XYZ(fi.FacingOrientation.X, fi.FacingOrientation.Y, 0);
+                if (facing.GetLength() > 1e-6)
+                {
+                    facing = facing.Normalize();
+                    double[] testOffsets = new double[] { insetFeet, insetFeet * 1.5, insetFeet * 2.5 };
+
+                    foreach (double offset in testOffsets)
+                    {
+                        XYZ plusTest = new XYZ(basePt.X + facing.X * offset, basePt.Y + facing.Y * offset, testZ);
+                        XYZ minusTest = new XYZ(basePt.X - facing.X * offset, basePt.Y - facing.Y * offset, testZ);
+
+                        Room? roomPlus = doc.GetRoomAtPoint(plusTest);
+                        Room? roomMinus = doc.GetRoomAtPoint(minusTest);
+
+                        if (roomPlus != null && roomMinus == null)
+                        {
+                            return new XYZ(plusTest.X, plusTest.Y, levelZ);
+                        }
+                        if (roomMinus != null && roomPlus == null)
+                        {
+                            return new XYZ(minusTest.X, minusTest.Y, levelZ);
+                        }
+                        if (roomPlus != null && roomMinus != null)
+                        {
+                            // 雙側皆為室內空間（室內安全梯門或防火門），確認中心點或微偏點即可
+                            Room? centerRoom = doc.GetRoomAtPoint(new XYZ(basePt.X, basePt.Y, testZ));
+                            if (centerRoom != null)
+                                return new XYZ(basePt.X, basePt.Y, levelZ);
+                            return new XYZ(plusTest.X, plusTest.Y, levelZ);
+                        }
+                    }
+                }
+
+                // 備援：以 8 方位尋找位於 Room 內的點
+                foreach (XYZ dir in EightDirections)
+                {
+                    XYZ cand = new XYZ(basePt.X + dir.X * insetFeet, basePt.Y + dir.Y * insetFeet, testZ);
+                    if (doc.GetRoomAtPoint(cand) != null)
+                    {
+                        return new XYZ(cand.X, cand.Y, levelZ);
+                    }
+                }
+            }
+
+            return new XYZ(basePt.X, basePt.Y, levelZ);
+        }
+
+        /// <summary>
+        /// 清理受檢房間先前留下的舊 PathOfTravel 與轉折線段標註輔助線，避免重複執行時殘留舊路徑。
+        /// </summary>
+        private static void CleanupPreviousRoomAuditElements(
+            Document doc,
+            ViewPlan viewPlan,
+            IList<Room> targetRooms,
+            double planElevation)
+        {
+            if (targetRooms == null || targetRooms.Count == 0)
+                return;
+
+            double testZ = planElevation + 2.0;
+            var existingPaths = new FilteredElementCollector(doc, viewPlan.Id)
+                .OfClass(typeof(PathOfTravel))
+                .Cast<PathOfTravel>()
+                .ToList();
+
+            if (existingPaths.Count == 0)
+                return;
+
+            var endpointsToClean = new List<XYZ>();
+            var pathIdsToDelete = new List<ElementId>();
+
+            foreach (PathOfTravel oldPath in existingPaths)
+            {
+                if (oldPath == null || !oldPath.IsValidObject)
+                    continue;
+
+                XYZ startTest = new XYZ(oldPath.PathStart.X, oldPath.PathStart.Y, testZ);
+                bool belongsToTargetRoom = targetRooms.Any(r =>
+                {
+                    try
+                    {
+                        return r.IsPointInRoom(startTest);
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                });
+
+                if (!belongsToTargetRoom)
+                    continue;
+
+                IList<Curve>? curves = oldPath.GetCurves();
+                if (curves != null)
+                {
+                    foreach (Curve c in curves)
+                    {
+                        if (c == null)
+                            continue;
+                        endpointsToClean.Add(new XYZ(c.GetEndPoint(0).X, c.GetEndPoint(0).Y, planElevation));
+                        endpointsToClean.Add(new XYZ(c.GetEndPoint(1).X, c.GetEndPoint(1).Y, planElevation));
+                    }
+                }
+
+                pathIdsToDelete.Add(oldPath.Id);
+            }
+
+            if (endpointsToClean.Count > 0)
+            {
+                var detailCurves = new FilteredElementCollector(doc, viewPlan.Id)
+                    .OfClass(typeof(CurveElement))
+                    .OfCategory(BuiltInCategory.OST_Lines)
+                    .Cast<CurveElement>()
+                    .ToList();
+
+                foreach (CurveElement ce in detailCurves)
+                {
+                    try
+                    {
+                        Curve? gc = ce.GeometryCurve;
+                        if (gc == null)
+                            continue;
+
+                        // 僅清理長度約 0.5 ft (tickHalfLen * 2) 且中點位於舊路徑轉折端點處的隱形標註參考短線
+                        if (Math.Abs(gc.Length - 0.5) < 0.08)
+                        {
+                            XYZ mid = gc.Evaluate(0.5, true);
+                            XYZ midPlanar = new XYZ(mid.X, mid.Y, planElevation);
+                            if (endpointsToClean.Any(ep => ep.DistanceTo(midPlanar) < 0.15))
+                            {
+                                doc.Delete(ce.Id);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // 忽略單一輔助線清理失敗
+                    }
+                }
+            }
+
+            foreach (ElementId pid in pathIdsToDelete)
+            {
+                try
+                {
+                    if (doc.GetElement(pid) != null)
+                    {
+                        doc.Delete(pid);
+                    }
+                }
+                catch
+                {
+                    // 忽略單一舊路徑刪除失敗
+                }
+            }
+        }
+
+        /// <summary>
+        /// 步驟 2：識別樓層中所有「非目標出口之建築外門」，並於其室外側建立臨時 U 型阻斷牆，強制 PathOfTravel 只能走室內走廊與內門。
+        /// </summary>
+        private static List<ElementId> CreateTemporaryExteriorDoorBarriers(
+            Document doc,
+            ViewPlan viewPlan,
+            HashSet<long> targetExitDoorIds,
+            double planElevation,
+            out List<XYZ> validInteriorAndTargetDoorCenters)
+        {
+            var barrierWallIds = new List<ElementId>();
+            validInteriorAndTargetDoorCenters = new List<XYZ>();
+
+            ElementId levelId = viewPlan.GenLevel?.Id ?? ElementId.InvalidElementId;
+            if (levelId == ElementId.InvalidElementId)
+                return barrierWallIds;
+
+            WallType? basicWallType = new FilteredElementCollector(doc)
+                .OfClass(typeof(WallType))
+                .Cast<WallType>()
+                .FirstOrDefault(wt => wt.Kind == WallKind.Basic);
+
+            if (basicWallType == null)
+                return barrierWallIds;
+
+            double testZ = planElevation + 2.0;
+
+            var doors = new FilteredElementCollector(doc)
+                .OfCategory(BuiltInCategory.OST_Doors)
+                .OfClass(typeof(FamilyInstance))
+                .Cast<FamilyInstance>()
+                .ToList();
+
+            foreach (FamilyInstance door in doors)
+            {
+                if (door == null || !door.IsValidObject)
+                    continue;
+
+                // 確認該門位於當前檢討樓層高度附近
+                XYZ? doorPt = GetElementCenterPoint(door);
+                if (doorPt == null)
+                    continue;
+
+                if (door.LevelId != ElementId.InvalidElementId && door.LevelId != levelId)
+                {
+                    if (Math.Abs(doorPt.Z - planElevation) > 6.0)
+                        continue;
+                }
+
+                long doorId = door.Id.GetIdValue();
+                XYZ centerOnPlan = new XYZ(doorPt.X, doorPt.Y, planElevation);
+
+                XYZ facing = new XYZ(door.FacingOrientation.X, door.FacingOrientation.Y, 0);
+                facing = facing.GetLength() > 1e-6 ? facing.Normalize() : XYZ.BasisY;
+
+                XYZ hand = new XYZ(door.HandOrientation.X, door.HandOrientation.Y, 0);
+                hand = hand.GetLength() > 1e-6 ? hand.Normalize() : new XYZ(-facing.Y, facing.X, 0);
+
+                // 檢查門前後兩側（約 0.6m 與 1.05m 處）是否皆有 Room
+                XYZ plusNear = new XYZ(centerOnPlan.X + facing.X * 2.0, centerOnPlan.Y + facing.Y * 2.0, testZ);
+                XYZ plusFar = new XYZ(centerOnPlan.X + facing.X * 3.5, centerOnPlan.Y + facing.Y * 3.5, testZ);
+                XYZ minusNear = new XYZ(centerOnPlan.X - facing.X * 2.0, centerOnPlan.Y - facing.Y * 2.0, testZ);
+                XYZ minusFar = new XYZ(centerOnPlan.X - facing.X * 3.5, centerOnPlan.Y - facing.Y * 3.5, testZ);
+
+                bool hasRoomPlus = doc.GetRoomAtPoint(plusNear) != null || doc.GetRoomAtPoint(plusFar) != null;
+                bool hasRoomMinus = doc.GetRoomAtPoint(minusNear) != null || doc.GetRoomAtPoint(minusFar) != null;
+
+                bool isExteriorDoor = !hasRoomPlus || !hasRoomMinus;
+
+                BoundingBoxXYZ? doorBbox = door.get_BoundingBox(null);
+                double bboxSpan = doorBbox != null
+                    ? Math.Max(Math.Abs(doorBbox.Max.X - doorBbox.Min.X), Math.Abs(doorBbox.Max.Y - doorBbox.Min.Y))
+                    : 6.0;
+                double dynamicHalfWidth = Math.Max(4.5, bboxSpan * 0.5 + 1.5);
+
+                if (targetExitDoorIds.Contains(doorId))
+                {
+                    // 目標逃生出口門：允許通行，但若是外門，則於其「室外側」外推處加上 U 型防堵罩，防止路徑從建築物外部繞入此出口門
+                    validInteriorAndTargetDoorCenters.Add(centerOnPlan);
+
+                    if (isExteriorDoor && (hasRoomPlus ^ hasRoomMinus))
+                    {
+                        XYZ extDir = !hasRoomPlus ? facing : -facing;
+                        CreateExteriorDoorUCapBarrier(
+                            doc,
+                            basicWallType.Id,
+                            levelId,
+                            centerOnPlan,
+                            hand,
+                            extDir,
+                            dynamicHalfWidth,
+                            1.8, // 往室外側外推 1.8 ft (~55cm)
+                            barrierWallIds);
+                    }
+                    continue;
+                }
+
+                if (!isExteriorDoor)
+                {
+                    // 兩側皆為室內空間的室內門：正常保留通行並記錄門中心點
+                    validInteriorAndTargetDoorCenters.Add(centerOnPlan);
+                    continue;
+                }
+
+                // 非目標之建築外門：於門扇開口處與室外側建立臨時阻斷牆，封鎖穿出建築物外部的捷徑
+                XYZ exteriorDir = !hasRoomPlus ? facing : (!hasRoomMinus ? -facing : facing);
+                CreateExteriorDoorUCapBarrier(
+                    doc,
+                    basicWallType.Id,
+                    levelId,
+                    centerOnPlan,
+                    hand,
+                    exteriorDir,
+                    dynamicHalfWidth,
+                    1.0, // 往室外側外推 1.0 ft (~30cm)
+                    barrierWallIds);
+            }
+
+            return barrierWallIds;
+        }
+
+        private static void CreateExteriorDoorUCapBarrier(
+            Document doc,
+            ElementId wallTypeId,
+            ElementId levelId,
+            XYZ doorCenter,
+            XYZ handDir,
+            XYZ extDir,
+            double halfWidthFeet,
+            double extDepthFeet,
+            List<ElementId> createdWallIds)
+        {
+            try
+            {
+                // 側翼起點稍微嵌入外牆中心線內側 0.25 ft，確保與外牆／帷幕牆之間無任何縫隙
+                XYZ pLeftWall = doorCenter - handDir * halfWidthFeet - extDir * 0.25;
+                XYZ pLeftExt = doorCenter - handDir * halfWidthFeet + extDir * extDepthFeet;
+                XYZ pRightWall = doorCenter + handDir * halfWidthFeet - extDir * 0.25;
+                XYZ pRightExt = doorCenter + handDir * halfWidthFeet + extDir * extDepthFeet;
+
+                Line[] barrierLines = new Line[]
+                {
+                    Line.CreateBound(pLeftExt, pRightExt),
+                    Line.CreateBound(pLeftWall, pLeftExt),
+                    Line.CreateBound(pRightWall, pRightExt)
+                };
+
+                foreach (Line line in barrierLines)
+                {
+                    if (line.Length <= 0.1)
+                        continue;
+
+                    Wall w = Wall.Create(doc, line, wallTypeId, levelId, 10.0, 0.0, false, false);
+                    if (w != null)
+                    {
+                        WallUtils.DisallowWallJoinAtEnd(w, 0);
+                        WallUtils.DisallowWallJoinAtEnd(w, 1);
+                        createdWallIds.Add(w.Id);
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略單一臨時阻斷牆建立例外
+            }
+        }
+
+        /// <summary>
+        /// 步驟 3：檢核 PathOfTravel 的所有轉折線段是否全程位於建築物室內空間（Room 涵蓋範圍或室內門過渡區）。
+        /// </summary>
+        private static bool IsPathStrictlyInterior(
+            Document doc,
+            PathOfTravel path,
+            double planElevation,
+            IList<XYZ> validDoorCenters)
+        {
+            IList<Curve>? curves = path.GetCurves();
+            if (curves == null || curves.Count == 0)
+                return false;
+
+            double testZ = planElevation + 2.0;
+            double sampleStepFeet = 1.5; // 每隔約 45cm 取樣檢查一次
+
+            foreach (Curve curve in curves)
+            {
+                if (curve == null || curve.Length <= 1e-4)
+                    continue;
+
+                double len = curve.Length;
+                int steps = Math.Max(2, (int)Math.Ceiling(len / sampleStepFeet));
+
+                for (int i = 0; i <= steps; i++)
+                {
+                    double param = (double)i / steps;
+                    XYZ pt = curve.Evaluate(param, true);
+                    if (!IsPointInAnyRoomOrDoorThreshold(doc, pt, testZ, validDoorCenters))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsPointInAnyRoomOrDoorThreshold(
+            Document doc,
+            XYZ pt,
+            double testZ,
+            IList<XYZ> validDoorCenters)
+        {
+            XYZ testPt = new XYZ(pt.X, pt.Y, testZ);
+            if (doc.GetRoomAtPoint(testPt) != null)
+                return true;
+
+            // 若取樣點剛好落在室內門框或隔間牆厚度過渡區（約 35cm = 1.15 ft 內），檢查其四向微幅偏移是否位於 Room 內
+            double probeOffset = 1.15;
+            foreach (XYZ dir in EightDirections)
+            {
+                XYZ probe = new XYZ(pt.X + dir.X * probeOffset, pt.Y + dir.Y * probeOffset, testZ);
+                if (doc.GetRoomAtPoint(probe) != null)
+                {
+                    // 確認反方向或鄰近點也在室內（或是位於有效門中心點 3.0 ft 內），避免將外牆外側 35cm 誤判為室內
+                    XYZ oppositeProbe = new XYZ(pt.X - dir.X * probeOffset, pt.Y - dir.Y * probeOffset, testZ);
+                    if (doc.GetRoomAtPoint(oppositeProbe) != null)
+                        return true;
+                }
+            }
+
+            // 檢查是否位於有效室內門或目標出口門中心 3.0 ft (~0.9m) 門檻過渡範圍內
+            if (validDoorCenters != null)
+            {
+                foreach (XYZ doorCenter in validDoorCenters)
+                {
+                    double dist2D = Math.Sqrt(
+                        Math.Pow(pt.X - doorCenter.X, 2) +
+                        Math.Pow(pt.Y - doorCenter.Y, 2));
+                    if (dist2D <= 3.0)
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private static double GetPathOfTravelLengthFeet(PathOfTravel path)
