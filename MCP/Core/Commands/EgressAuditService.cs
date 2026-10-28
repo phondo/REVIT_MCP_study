@@ -375,6 +375,12 @@ namespace RevitMCP.Core
                     using (Transaction prepTrans = new Transaction(doc, "準備室內避難尋路環境"))
                     {
                         prepTrans.Start();
+                        var fOpts = prepTrans.GetFailureHandlingOptions();
+                        fOpts.SetFailuresPreprocessor(new SilentFailuresPreprocessor());
+                        fOpts.SetClearAfterRollback(true);
+                        fOpts.SetForcedModalHandling(false);
+                        prepTrans.SetFailureHandlingOptions(fOpts);
+
                         CleanupPreviousRoomAuditElements(doc, primaryViewPlan, validRooms, primaryElevation);
                         tempBarrierWallIds = CreateTemporaryExteriorDoorBarriers(
                             doc,
@@ -456,6 +462,11 @@ namespace RevitMCP.Core
                         using (Transaction trans = new Transaction(doc, $"避難路徑檢核 - {room.Name}"))
                         {
                             trans.Start();
+                            var fOpts = trans.GetFailureHandlingOptions();
+                            fOpts.SetFailuresPreprocessor(new SilentFailuresPreprocessor());
+                            fOpts.SetClearAfterRollback(true);
+                            fOpts.SetForcedModalHandling(false);
+                            trans.SetFailureHandlingOptions(fOpts);
 
                             IList<PathOfTravel> createdPaths = PathOfTravel.CreateMapped(viewPlan, startPoints, exitPointsOnPlan);
 
@@ -646,6 +657,12 @@ namespace RevitMCP.Core
                         using (Transaction cleanupTrans = new Transaction(doc, "移除臨時外門阻斷牆"))
                         {
                             cleanupTrans.Start();
+                            var fOpts = cleanupTrans.GetFailureHandlingOptions();
+                            fOpts.SetFailuresPreprocessor(new SilentFailuresPreprocessor());
+                            fOpts.SetClearAfterRollback(true);
+                            fOpts.SetForcedModalHandling(false);
+                            cleanupTrans.SetFailureHandlingOptions(fOpts);
+
                             foreach (ElementId wid in tempBarrierWallIds)
                             {
                                 try
@@ -960,6 +977,31 @@ namespace RevitMCP.Core
 
             if (endpointsToClean.Count > 0)
             {
+                // 先清理舊路徑上的 Dimension 尺寸標註（避免刪除 DetailCurve 時拋出尺寸參照遺失的 Modal 對話框）
+                var existingDimensions = new FilteredElementCollector(doc, viewPlan.Id)
+                    .OfClass(typeof(Dimension))
+                    .Cast<Dimension>()
+                    .ToList();
+
+                foreach (Dimension dim in existingDimensions)
+                {
+                    try
+                    {
+                        if (dim.Curve != null)
+                        {
+                            XYZ mid = dim.Curve.Evaluate(0.5, true);
+                            XYZ midPlanar = new XYZ(mid.X, mid.Y, planElevation);
+                            if (endpointsToClean.Any(ep => ep.DistanceTo(midPlanar) < 2.0))
+                            {
+                                doc.Delete(dim.Id);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
                 var detailCurves = new FilteredElementCollector(doc, viewPlan.Id)
                     .OfClass(typeof(CurveElement))
                     .OfCategory(BuiltInCategory.OST_Lines)
@@ -1142,10 +1184,10 @@ namespace RevitMCP.Core
         {
             try
             {
-                // 側翼起點稍微嵌入外牆中心線內側 0.25 ft，確保與外牆／帷幕牆之間無任何縫隙
-                XYZ pLeftWall = doorCenter - handDir * halfWidthFeet - extDir * 0.25;
+                // 側翼起點位於門外側 0.2 ft (~6cm)，完全不碰觸或嵌入原外牆／帷幕牆
+                XYZ pLeftWall = doorCenter - handDir * halfWidthFeet + extDir * 0.2;
                 XYZ pLeftExt = doorCenter - handDir * halfWidthFeet + extDir * extDepthFeet;
-                XYZ pRightWall = doorCenter + handDir * halfWidthFeet - extDir * 0.25;
+                XYZ pRightWall = doorCenter + handDir * halfWidthFeet + extDir * 0.2;
                 XYZ pRightExt = doorCenter + handDir * halfWidthFeet + extDir * extDepthFeet;
 
                 Line[] barrierLines = new Line[]
