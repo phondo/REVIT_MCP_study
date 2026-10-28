@@ -2,7 +2,7 @@
 name: walking-egress-review
 description: "依台灣《建築技術規則》建築設計施工編第 93 條自動執行房間避難步行距離法規檢核、視覺化逃生路徑標註，並於指定圖紙建立檢討明細表與建築執照標準法規說明文字。觸發條件：步行距離、避難步行距離、第93條、逃生距離、避難路徑檢核、walking egress review、egress audit、PathOfTravel。"
 metadata:
-  version: "1.1"
+  version: "1.2"
   updated: "2026-10-28"
   created: "2026-10-22"
   references:
@@ -39,14 +39,18 @@ metadata:
 - **第三款（一般防火構造居室）**：**50 公尺**（前二款以外之一般辦公室、學校教室等居室，主要構造為防火構造者）。
 - *註：若全區設有自動撒水設備且符合法規放寬條件，得依使用者指示調整上限值。*
 
-### Step 3：執行幾何路徑計算與視覺化標註
+### Step 3：執行幾何路徑計算、轉折分段標註與外部視覺化總結報告
 呼叫 `audit_room_egress` 工具，傳入：
 - `roomIds`: 目標居室的 ElementId 陣列
 - `exitDoorIds`: 避難出口門的 ElementId 陣列
 - `maxAllowedMeters`: Step 2 判定之法規上限公尺數
-- `dimensionSegments`: （選填，預設 `true`）是否自動於逃生路徑每個轉折線段（長度 `>= 10cm`）上建立 Revit 原生線性尺寸標註（`Dimension`），極短轉折碎線段（`< 10cm`）仍計入總長但不單獨標註尺寸以維持圖面整潔。
+- `dimensionSegments`: （選填，預設 `true`）自動於逃生路徑每個轉折線段（長度 `>= 10cm`）上建立 Revit 原生線性尺寸標註（`Dimension`），極短轉折碎線段（`< 10cm`）仍計入總長但不單獨標註尺寸以維持圖面整潔。
+- `occupancyCategory`: （選填）Step 2 判定之法規適用類組與構造別說明文字（例如 `"B-2 辦公場所（第 93 條第 3 款｜主要構造：防火構造）"`），將顯示於外部視覺化總結報告之「法規適用類組」設定條件卡中。
+- `openReport`: （選填，預設 `true`）檢核完成後自動透過本機輕量橋接伺服器（`127.0.0.1`）於系統預設瀏覽器彈出**外部視覺化總結報告**：
+  1. **STEP 1 設定條件與檢核基準**：依序顯示「檢討樓層」、「檢討房間名稱」、「檢討出口位置」、「法規適用類組」四張設定條件卡片與統計 KPI。
+  2. **STEP 2 各空間最遠路徑分析結果與 Revit 即時連動**：列出每個空間的最遠路徑長度、各轉折線段尺寸明細、對應出口及檢討是否通過；點選任一結果空間列，將透過本機橋接自動呼叫 `select_element` 與 `zoom_to_element`，直接於 Revit 視圖中縮放並高亮顯示該空間與逃生路徑。
 
-等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度陣列（`SegmentLengthsMeters`）、新建轉折尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）與合格狀態（`IsCompliant`）。
+等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度陣列（`SegmentLengthsMeters`）、新建轉折尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）、合格狀態（`IsCompliant`）與外部視覺化報告網址。
 
 ### Step 4：撰寫正式法規檢討文字並輸出至圖紙
 收到 `audit_room_egress` 的回傳數據後，自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具將明細表與文字放置到指定圖紙（如 `sheetNumber: "A-101"`）。

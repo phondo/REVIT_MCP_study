@@ -252,8 +252,9 @@ namespace RevitMCP.Core
             List<long> exitDoorIds = parameters["exitDoorIds"]?.Values<long>().ToList() ?? new List<long>();
             double maxAllowedMeters = parameters["maxAllowedMeters"]?.Value<double>() ?? 30.0;
             bool dimensionSegments = parameters["dimensionSegments"]?.Value<bool>() ?? true;
+            string? occupancyCategory = parameters["occupancyCategory"]?.Value<string>();
 
-            return ExecuteEgressAudit(doc, roomIds, exitDoorIds, maxAllowedMeters, dimensionSegments);
+            return ExecuteEgressAudit(doc, roomIds, exitDoorIds, maxAllowedMeters, dimensionSegments, occupancyCategory);
         }
 
         /// <summary>
@@ -264,7 +265,8 @@ namespace RevitMCP.Core
             IList<long> roomIds,
             IList<long> exitDoorIds,
             double maxAllowedMeters,
-            bool dimensionSegments = true)
+            bool dimensionSegments = true,
+            string? occupancyCategory = null)
         {
             if (doc == null)
                 throw new ArgumentNullException(nameof(doc));
@@ -314,6 +316,18 @@ namespace RevitMCP.Core
             int compliantCount = 0;
             int nonCompliantCount = 0;
             int failedCount = 0;
+            string resolvedLevelName = string.Empty;
+            double resolvedLevelElevationMeters = 0.0;
+            long resolvedViewId = 0;
+            string resolvedViewName = string.Empty;
+
+            string resolvedOccupancyCategory = !string.IsNullOrWhiteSpace(occupancyCategory)
+                ? occupancyCategory!
+                : (maxAllowedMeters <= 30.0
+                    ? "第 93 條第 1 款（特定高風險場所／非防火構造）"
+                    : (maxAllowedMeters <= 40.0
+                        ? "第 93 條第 2 款（醫療／住宿／無窗居室／特定場所）"
+                        : "第 93 條第 3 款（一般防火構造居室）"));
 
             using (TransactionGroup tg = new TransactionGroup(doc, "房間避難路徑檢核"))
             {
@@ -357,6 +371,16 @@ namespace RevitMCP.Core
                     double planElevation = viewPlan.GenLevel != null
                         ? viewPlan.GenLevel.Elevation
                         : (doc.GetElement(room.LevelId) as Level)?.Elevation ?? 0.0;
+
+                    if (resolvedViewId == 0)
+                    {
+                        resolvedViewId = viewPlan.Id.GetIdValue();
+                        resolvedViewName = viewPlan.Name ?? string.Empty;
+                        Level? lvl = viewPlan.GenLevel ?? (doc.GetElement(room.LevelId) as Level);
+                        resolvedLevelName = lvl?.Name ?? resolvedViewName;
+                        resolvedLevelElevationMeters = Math.Round(
+                            UnitUtils.ConvertFromInternalUnits(planElevation, UnitTypeId.Meters), 2);
+                    }
 
                     List<XYZ> startPoints = GetInsetRoomBoundaryVertices(room, insetFeet, planElevation);
                     if (startPoints.Count == 0)
@@ -523,6 +547,16 @@ namespace RevitMCP.Core
                 NonCompliantCount = nonCompliantCount,
                 FailedCount = failedCount,
                 MaxAllowedMeters = maxAllowedMeters,
+                OccupancyCategory = resolvedOccupancyCategory,
+                LevelName = resolvedLevelName,
+                LevelElevationMeters = resolvedLevelElevationMeters,
+                ViewId = resolvedViewId,
+                ViewName = resolvedViewName,
+                ExitDoors = exitTargets.Select(t => new
+                {
+                    DoorId = t.DoorId,
+                    Label = t.Label
+                }).ToList(),
                 Results = roomResults
             };
         }

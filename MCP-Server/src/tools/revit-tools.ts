@@ -16,6 +16,7 @@ import {
     formatEgressAuditResponse,
     generateEgressSheetNoteInputSchema,
     formatGenerateEgressSheetNoteResponse,
+    launchEgressVisualReport,
 } from "./egress-audit-tools.js";
 
 /**
@@ -57,7 +58,17 @@ export async function executeRevitTool(
     }
 
     if (commandName === "audit_room_egress") {
-        return formatEgressAuditResponse(response.data);
+        let reportInfo: { reportUrl: string; reportFilePath: string } | undefined;
+        try {
+            reportInfo = await launchEgressVisualReport(
+                response.data,
+                client,
+                validatedArgs.openReport !== false
+            );
+        } catch {
+            // 若啟動外部報告橋接失敗，不阻斷檢核資料回傳
+        }
+        return formatEgressAuditResponse(response.data, reportInfo);
     }
 
     if (commandName === "generate_egress_sheet_note") {
