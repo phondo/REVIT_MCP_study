@@ -52,10 +52,15 @@ export const generateEgressSheetNoteInputSchema = z.object({
     sheetNumber: z
         .string()
         .min(1, "sheetNumber 不可為空")
-        .describe('要放置檢討表與備註的目標圖號，例如 "A-101"'),
+        .describe('要放置法規檢討備註文字的目標圖號，例如 "A-101"'),
     regulationNoteText: z
         .string()
         .describe("AI 根據建築技術規則自動彙整的法規說明與結論文字，支援換行符號"),
+    placeScheduleOnSheet: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("是否將「避難步行距離檢討表」直接排版放置到圖紙上（預設為 false：明細表僅建立於 Revit 專案明細表清單中，不直接排版到檢討樓層的圖紙上）"),
 });
 
 export type GenerateEgressSheetNoteInput = z.infer<typeof generateEgressSheetNoteInputSchema>;
@@ -64,7 +69,7 @@ export const egressAuditTools: Tool[] = [
     {
         name: "audit_room_egress",
         description:
-            "執行房間避難步行距離法規檢核。自動建立房間避難共用參數、由房間外圈頂點內縮 0.3m 計算至各避難出口門的室內逃生路徑，多出口時自動為每個房間擇定最近出口並僅保留 1 條最不利路徑、寫入合格狀態參數、套用視圖紅綠線型覆寫、中點標籤、於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註，並自動於預設瀏覽器彈出外部視覺化總結報告（支援點選空間直接連動顯示 Revit 內該空間與逃生路徑）。",
+            "執行房間避難步行距離法規檢核。自動建立房間避難共用參數、由房間外圈頂點內縮 0.3m 計算至各避難出口門的室內逃生路徑，多出口時自動為每個房間擇定最近出口並僅保留 1 條最不利路徑、寫入合格狀態參數、隨距離檢討自動於 Revit 專案中建立或更新「避難步行距離檢討表」明細表（ViewSchedule，僅存於專案明細表清單、不直接排版至圖紙上）、套用視圖紅綠線型覆寫、中點標籤、於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註，並自動於預設瀏覽器彈出外部視覺化總結報告（支援點選空間直接連動顯示 Revit 內該空間與逃生路徑）。",
         inputSchema: {
             type: "object",
             properties: {
@@ -104,17 +109,22 @@ export const egressAuditTools: Tool[] = [
     {
         name: "generate_egress_sheet_note",
         description:
-            "於指定圖紙建立房間避難步行距離檢討表並放置法規檢討綜整說明文字。自動建立包含房間編號、名稱與 4 個避難共用參數的明細表，並排版於圖紙右下角及下方文字備註。",
+            "建立或更新 Revit 專案中的「避難步行距離檢討表」明細表（預設僅存於 Revit 明細表清單、不直接排版到檢討樓層的圖紙上），並於指定圖紙放置法規檢討綜整說明文字（TextNote）。",
         inputSchema: {
             type: "object",
             properties: {
                 sheetNumber: {
                     type: "string",
-                    description: '要放置檢討表與備註的目標圖號，例如 "A-101"',
+                    description: '要放置法規檢討說明備註的目標圖號，例如 "A-101"',
                 },
                 regulationNoteText: {
                     type: "string",
                     description: "AI 根據建築技術規則自動彙整的法規說明與結論文字，支援換行符號",
+                },
+                placeScheduleOnSheet: {
+                    type: "boolean",
+                    description:
+                        "是否將「避難步行距離檢討表」直接排版放置到圖紙上（預設 false，不放置於圖紙上，僅建立為 Revit 明細表視圖）",
                 },
             },
             required: ["sheetNumber", "regulationNoteText"],
@@ -219,10 +229,11 @@ async function ensureEgressReportBridge(client: RevitSocketClient): Promise<numb
                     const payload = JSON.parse(raw || "{}");
                     const sheetNumber = String(payload.sheetNumber || "A-101").trim();
                     const regulationNoteText = String(payload.regulationNoteText || "");
+                    const placeScheduleOnSheet = Boolean(payload.placeScheduleOnSheet === true);
 
                     const resp = await activeRevitClient.sendCommand(
                         "generate_egress_sheet_note",
-                        { sheetNumber, regulationNoteText },
+                        { sheetNumber, regulationNoteText, placeScheduleOnSheet },
                         30000
                     );
                     if (!resp.success) {
@@ -263,7 +274,27 @@ async function ensureEgressReportBridge(client: RevitSocketClient): Promise<numb
 function openUrlInDefaultBrowser(targetUrl: string): void {
     try {
         if (process.platform === "win32") {
-            execFile("cmd", ["/c", "start", "", targetUrl], { windowsHide: true }, () => {});
+            // 當 MCP Server 由 AI 宿主於隔離/非互動式 WindowStation 啟動時，直接 start 會在隱藏桌面開啟視窗。
+            // 透過 schtasks /it (Interactive) 委由 Windows 排程服務於使用者互動式桌面 (WinSta0\Default) 啟動 Edge 視窗。
+            const cmdPath = path.join(os.tmpdir(), "open_egress_report.cmd");
+            const edgeExe = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+            const cmdContent = fs.existsSync(edgeExe)
+                ? `@echo off\r\nstart "" "${edgeExe}" --new-window "${targetUrl}"\r\n`
+                : `@echo off\r\nstart "" "${targetUrl}"\r\n`;
+            fs.writeFileSync(cmdPath, cmdContent, "ascii");
+
+            execFile(
+                "cmd",
+                [
+                    "/c",
+                    `schtasks /create /tn "RevitMCPOpenReport" /tr "${cmdPath}" /sc ONCE /st 00:00 /it /f && schtasks /run /tn "RevitMCPOpenReport" && timeout /t 2 /nobreak >nul && schtasks /delete /tn "RevitMCPOpenReport" /f`,
+                ],
+                (err) => {
+                    if (err) {
+                        execFile("cmd", ["/c", "start", "", targetUrl], () => {});
+                    }
+                }
+            );
         } else if (process.platform === "darwin") {
             execFile("open", [targetUrl], () => {});
         } else {
@@ -447,7 +478,7 @@ export function buildEgressVisualReportHtml(data: any, port: number): string {
           <span class="conn-dot"></span>
           <span>Revit MCP 橋接中 (127.0.0.1:${port})</span>
         </div>
-        <button class="btn-primary" id="sheetBtn" onclick="triggerSheetExport()">📋 輸出檢討表至圖紙</button>
+        <button class="btn-primary" id="sheetBtn" onclick="triggerSheetExport()">📝 輸出法規說明至圖紙（明細表僅存於專案）</button>
       </div>
     </div>
 
@@ -813,11 +844,11 @@ export function buildEgressVisualReportHtml(data: any, port: number): string {
     }
 
     async function triggerSheetExport() {
-      const sheetNumber = prompt('請輸入要放置「避難步行距離檢討表」與法規說明的目標圖號：', 'A-101');
+      const sheetNumber = prompt('請輸入要放置「法規檢討說明文字」的目標圖號（明細表將僅建立於 Revit 專案明細表清單，不直接排版至圖紙）：', 'A-101');
       if (!sheetNumber) return;
 
       const btn = document.getElementById('sheetBtn');
-      btn.textContent = '⏳ 正在輸出至圖紙 ' + sheetNumber + '...';
+      btn.textContent = '⏳ 正在輸出法規說明至圖紙 ' + sheetNumber + '...';
 
       const sortedByDist = [...ValidRooms].sort((a, b) => Number(b.ActualDistanceMeters || 0) - Number(a.ActualDistanceMeters || 0));
       const worst = sortedByDist[0] || {};
@@ -850,14 +881,14 @@ export function buildEgressVisualReportHtml(data: any, port: number): string {
         const res = await fetch('http://127.0.0.1:' + BridgePort + '/api/export-sheet', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sheetNumber, regulationNoteText: noteText })
+          body: JSON.stringify({ sheetNumber, regulationNoteText: noteText, placeScheduleOnSheet: false })
         });
         const out = await res.json();
-        btn.textContent = out.ok ? ('✓ 已成功輸出至圖紙 ' + sheetNumber) : ('❌ 輸出失敗：' + out.error);
+        btn.textContent = out.ok ? ('✓ 已輸出法規說明至圖紙 ' + sheetNumber + '（明細表存於專案）') : ('❌ 輸出失敗：' + out.error);
       } catch (e) {
         btn.textContent = '❌ 輸出失敗';
       }
-      setTimeout(() => { btn.textContent = '📋 輸出檢討表至圖紙'; }, 3500);
+      setTimeout(() => { btn.textContent = '📝 輸出法規說明至圖紙（明細表僅存於專案）'; }, 3500);
     }
 
     initDashboard();
@@ -918,6 +949,7 @@ export function formatEgressAuditResponse(
         `檢討樓層：${levelName}`,
         `法規適用類組：${occupancyCategory}（法規容許上限：${maxAllowedMeters} m）`,
         `檢核房間總數：${totalRooms} 間（合格：${compliantCount}｜不合格：${nonCompliantCount}｜失敗：${failedCount}）`,
+        `Revit 專案明細表：${data.ScheduleName || "避難步行距離檢討表"}${data.ScheduleId ? ` (Schedule ID: ${data.ScheduleId})` : ""}（已建立於 Revit 明細表清單，未直接排版至圖紙上）`,
     ];
 
     if (reportInfo) {
@@ -964,7 +996,10 @@ export function formatEgressAuditResponse(
  */
 export function formatGenerateEgressSheetNoteResponse(sheetNumber: string, data: any): string {
     const resolvedSheetNumber = data?.SheetNumber || sheetNumber;
-    const header = `已成功於圖紙 ${resolvedSheetNumber} 建立法規檢討明細表與備註`;
+    const placedSchedule = data?.PlacedScheduleOnSheet === true;
+    const header = placedSchedule
+        ? `已成功於圖紙 ${resolvedSheetNumber} 建立法規檢討明細表與備註`
+        : `已於 Revit 專案建立「${data?.ScheduleName || "避難步行距離檢討表"}」明細表（不直接排版至圖紙），並於圖紙 ${resolvedSheetNumber} 放置法規檢討說明文字`;
 
     if (!data || typeof data !== "object") {
         return header;

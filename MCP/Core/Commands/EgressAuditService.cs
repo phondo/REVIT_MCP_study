@@ -328,6 +328,9 @@ namespace RevitMCP.Core
             double resolvedLevelElevationMeters = 0.0;
             long resolvedViewId = 0;
             string resolvedViewName = string.Empty;
+            long resolvedScheduleId = 0;
+            string resolvedScheduleName = EgressSheetNoteService.DefaultScheduleName;
+            List<string> resolvedScheduleFields = new List<string>();
             var assignedRoomCounts = new Dictionary<long, int>();
 
             string resolvedOccupancyCategory = !string.IsNullOrWhiteSpace(occupancyCategory)
@@ -680,6 +683,18 @@ namespace RevitMCP.Core
                             cleanupTrans.Commit();
                         }
                     }
+                    // 隨距離檢討自動於 Revit 專案中建立或更新「避難步行距離檢討表」明細表（ViewSchedule），但不直接排版到圖紙上
+                    using (Transaction schedTrans = new Transaction(doc, "建立或更新避難步行距離檢討明細表"))
+                    {
+                        schedTrans.Start();
+                        ViewSchedule egressSchedule = EgressSheetNoteService.EnsureOrUpdateEgressSchedule(
+                            doc,
+                            out resolvedScheduleFields,
+                            removeSheetInstances: true);
+                        resolvedScheduleId = egressSchedule.Id.GetIdValue();
+                        resolvedScheduleName = egressSchedule.Name;
+                        schedTrans.Commit();
+                    }
                 }
 
                 tg.Assimilate();
@@ -697,6 +712,10 @@ namespace RevitMCP.Core
                 LevelElevationMeters = resolvedLevelElevationMeters,
                 ViewId = resolvedViewId,
                 ViewName = resolvedViewName,
+                ScheduleId = resolvedScheduleId,
+                ScheduleName = resolvedScheduleName,
+                ScheduleFields = resolvedScheduleFields,
+                SchedulePlacedOnSheet = false,
                 ExitDoors = exitTargets.Select(t => new
                 {
                     DoorId = t.DoorId,

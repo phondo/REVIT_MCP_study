@@ -1,6 +1,6 @@
 ---
 name: walking-egress-review
-description: "依台灣《建築技術規則》第 93 條自動執行 Revit 房間避難步行距離檢核、繪製最不利逃生路徑與紅綠視覺化標註，並於指定圖紙自動排版避難步行距離檢討表與建照法規檢討說明文字。當使用者要求檢核步行距離、逃生距離、避難路徑、第 93 條檢討或圖紙自動排版時使用。觸發條件：步行距離、避難步行距離、逃生路徑、第93條、walking egress review、egress audit、避難檢核圖紙排版。"
+description: "依台灣《建築技術規則》第 93 條自動執行 Revit 房間避難步行距離檢核、繪製最不利逃生路徑與紅綠視覺化標註、隨距離檢討自動建立 Revit「避難步行距離檢討表」明細表（不直接排版到檢討樓層的圖紙上），並於指定圖紙排版建照法規檢討說明文字。當使用者要求檢核步行距離、逃生距離、避難路徑、第 93 條檢討或圖紙自動排版時使用。觸發條件：步行距離、避難步行距離、逃生路徑、第93條、walking egress review、egress audit、避難檢核圖紙排版。"
 ---
 
 # Role: Revit 建築法規自動化檢核專家 (Taiwan Building Code Egress Auditor)
@@ -35,10 +35,12 @@ description: "依台灣《建築技術規則》第 93 條自動執行 Revit 房�
 - `openReport`: （選填，預設 `true`）解析完成後自動於系統預設瀏覽器彈出**外部視覺化總結報告**（先顯示檢討樓層、檢討房間名稱、檢討出口位置、法規適用類組四項設定條件，再顯示各空間最遠路徑長度、轉折分段明細與合格狀態；點擊任一結果空間即可透過本機橋接自動連結回 Revit 縮放並高亮顯示該空間與逃生路徑）。
 - *註：後端內建「出口門室內側內縮定位」、「非目標建築外門臨時阻斷」與「路徑全程室內幾何檢核」三道防線，自動排除穿越建築物外部或中庭的無效路徑，確保逃生路線 100% 沿室內空間與走廊行進。*
 
-等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度（`SegmentLengthsMeters`）、各段尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）、合格狀態（`IsCompliant`）以及外部視覺化報告網址。
+等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度（`SegmentLengthsMeters`）、各段尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）、合格狀態（`IsCompliant`）、於 Revit 專案中建立的「避難步行距離檢討表」明細表 ID（`ScheduleId`，**僅建立為 Revit 明細表視圖 `ViewSchedule`，不直接排版到檢討樓層圖紙上**）以及外部視覺化報告網址。
 
-### Step 4：撰寫正式法規檢討文字並輸出至圖紙
-收到 `audit_room_egress` 的回傳數據後，請自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具將明細表與文字放置到指定圖紙（如 `sheetNumber: "A-101"`）。
+### Step 4：撰寫正式法規檢討文字並智慧尋空輸出至圖紙（明細表僅存於專案，不排版上圖紙）
+收到 `audit_room_egress` 的回傳數據後，請自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具（預設 `placeScheduleOnSheet: false`）：
+- **「避難步行距離檢討表」明細表**：隨距離檢討自動建立為 Revit 的明細表（`ViewSchedule`），保存在專案瀏覽器的「明細表/數量」清單中，**不要直接排版到檢討樓層的圖紙上**。
+- **圖框內智慧尋空防重疊排版**：自動識別目標圖紙（如 `sheetNumber: "A-101"`）上的圖框（`OST_TitleBlocks`）內框有效區與圖籤／標題欄範圍，並自動避開既有平面視埠（`Viewport` 及其標題）、明細表與文字註記，依「右下/右側空白區 ➔ 下方空白帶 ➔ 左側/上方空白區」優先順序將法規檢討說明文字（`TextNote`）無重疊放置於圖框內空白處。
 
 #### 📝 `regulationNoteText` 輸出文字格式規範（請嚴格套用此排版）：
 ```text
@@ -62,8 +64,8 @@ description: "依台灣《建築技術規則》第 93 條自動執行 Revit 房�
 | `get_active_view` | 取得當前平面視圖與樓層資訊 |
 | `get_rooms_by_level` | 取得目標樓層之房間清單，篩選面積 > 0 之居室並排除管道間／機電空間／樓梯間 |
 | `query_elements` | 查詢視圖或樓層中的門元件（`Doors`）及其 `Mark` / `Comments` 以識別避難出口門 |
-| `audit_room_egress` | 自動建立房間避難共用參數、由房間頂點內縮 0.3m 計算最不利逃生路徑、寫入參數、進行紅綠覆寫與中點標籤、於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註，並自動於瀏覽器彈出支援點選連動 Revit 空間的外部視覺化總結報告 |
-| `generate_egress_sheet_note` | 於目標圖紙自動建立「避難步行距離檢討表」明細表並排版法規檢討說明文字 |
+| `audit_room_egress` | 自動建立房間避難共用參數、由房間頂點內縮 0.3m 計算最不利逃生路徑、寫入參數、隨距離檢討建立 Revit「避難步行距離檢討表」明細表（不直接排版至圖紙上）、進行紅綠覆寫與中點標籤、於每個轉折線段（>= 10cm）建立 Revit 原生線性尺寸標註，並自動於瀏覽器彈出支援點選連動 Revit 空間的外部視覺化總結報告 |
+| `generate_egress_sheet_note` | 確保 Revit 專案中建立「避難步行距離檢討表」明細表（預設不直接排版至圖紙上），並於目標圖紙自動排版法規檢討說明文字 |
 
 ## Reference
 詳見 `domain/walking-egress-review.md` 與 `domain/references/building-code-tw.md`。

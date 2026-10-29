@@ -1,8 +1,8 @@
 ---
 name: walking-egress-review
-description: "依台灣《建築技術規則》建築設計施工編第 93 條自動執行房間避難步行距離法規檢核、視覺化逃生路徑標註，並於指定圖紙建立檢討明細表與建築執照標準法規說明文字。觸發條件：步行距離、避難步行距離、第93條、逃生距離、避難路徑檢核、walking egress review、egress audit、PathOfTravel。"
+description: "依台灣《建築技術規則》建築設計施工編第 93 條自動執行房間避難步行距離法規檢核、視覺化逃生路徑標註、於 Revit 專案自動建立「避難步行距離檢討表」明細表（不直接排版至檢討樓層圖紙上），並於指定圖紙建立建築執照標準法規說明文字。觸發條件：步行距離、避難步行距離、第93條、逃生距離、避難路徑檢核、walking egress review、egress audit、PathOfTravel。"
 metadata:
-  version: "1.4"
+  version: "1.5"
   updated: "2026-10-28"
   created: "2026-10-22"
   references:
@@ -57,10 +57,12 @@ metadata:
   2. **非目標建築外門計算期臨時阻斷**：自動識別樓層中非屬 `exitDoorIds` 之建築外門（含帷幕牆外門），於 `PathOfTravel.CreateMapped` 計算期間在室外側建立臨時 U 型阻斷牆（算完立即清除），強制尋路引擎 100% 沿室內走廊與室內門行進，不會穿出中庭或室外空地。
   3. **路徑線段全程室內幾何檢核**：對每條候選路徑線段進行 `doc.GetRoomAtPoint` 連續取樣驗證，自動剔除任何跨越建築外部無效區段之路徑。
 
-等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度陣列（`SegmentLengthsMeters`）、新建轉折尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）、合格狀態（`IsCompliant`）與外部視覺化報告網址。
+等待 C# 端回傳每個房間的實測最遠距離（`ActualDistanceMeters`）、各轉折線段長度陣列（`SegmentLengthsMeters`）、新建轉折尺寸標註 ID（`SegmentDimensionIds`）、對應出口（`TargetExit`）、合格狀態（`IsCompliant`）、自動建立於 Revit 專案明細表清單中的「避難步行距離檢討表」明細表 ID（`ScheduleId`，**僅建立為 Revit 的 `ViewSchedule` 明細表，不直接排版放置到檢討樓層的圖紙上**）與外部視覺化報告網址。
 
-### Step 4：撰寫正式法規檢討文字並輸出至圖紙
-收到 `audit_room_egress` 的回傳數據後，自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具將明細表與文字放置到指定圖紙（如 `sheetNumber: "A-101"`）。
+### Step 4：撰寫正式法規檢討文字並智慧尋空輸出至圖紙（明細表僅存於 Revit 專案，不排版上圖紙）
+收到 `audit_room_egress` 的回傳數據後，自動撰寫一段符合「建築執照法規檢討書圖」語氣的結構化文字，並立即呼叫 `generate_egress_sheet_note` 工具（預設 `placeScheduleOnSheet: false`）：
+- **「避難步行距離檢討表」明細表（`ViewSchedule`）**：隨距離檢討自動建立／更新於 Revit 專案瀏覽器的「明細表/數量」清單中，**不要直接排版放置到檢討樓層的圖紙上**。
+- **圖框內智慧尋空防重疊排版**：自動識別目標圖紙（如 `sheetNumber: "A-101"`）的圖框（`OST_TitleBlocks`）內框有效安全區與圖籤／標題欄區塊，並收集圖紙上所有既有視埠（`Viewport` 含標題線）、明細表與文字註記作為避讓障礙物；動態量測文字實際長寬後，依「右下/右側空白區 ➔ 下方空白帶 ➔ 左側/上方空白區」優先順序（含寬度自適應調整）將法規檢討說明文字（`TextNote`）無重疊放置於圖框內空白處。
 
 #### 📝 `regulationNoteText` 輸出文字格式規範（嚴格套用此排版）：
 ```text
