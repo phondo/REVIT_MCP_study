@@ -35,9 +35,9 @@ These counts must be derived from source, not copied by memory.
 
 | Item | Current Count | Source of Truth |
 |---|---:|---|
-| Runtime MCP tools | 192 | `registerRevitTools()` from `MCP-Server/src/tools/index.ts` |
-| Domain SOP files | 83 | `domain/*.md` except `domain/README.md`, plus `domain/references/*.md` |
-| Claude skills | 61 | `.claude/skills/*/SKILL.md` |
+| Runtime MCP tools | 194 | `registerRevitTools()` from `MCP-Server/src/tools/index.ts` |
+| Domain SOP files | 84 | `domain/*.md` except `domain/README.md`, plus `domain/references/*.md` |
+| Claude skills | 62 | `.claude/skills/*/SKILL.md` |
 
 When these numbers change, update `CLAUDE.md`, `README.md`, `README.zh-TW.md`, `docs/DOCUMENT_AUDIENCE_INVENTORY.md`, and any public site copy that makes grand-total claims. Then run `scripts/verify-qaqc.ps1 -SkipBuild -SkipDeploy`.
 
@@ -346,6 +346,7 @@ Read the matching file before applying a workflow or calculation.
 | space centroid, 空間中心點, 代表點, centroid, 批次放置, 逐室放置, 風口放置, air terminal, place_family_instances, get_space_centroid, IsPointInSpace | `domain/space-centroid-placement.md` |
 | 機電教戰手冊, MEP playbook, 教戰手冊, 五種量, 量從哪裡來, 決定的量, 教學假設, 放風口, 系統流量 vs 端點需求, 旗標誠實但問錯問題 | `domain/mep-space-demand-matrix.md`（方法） + `docs/BIM_MCP/reference/mep-playbook.html`（教學導覽） |
 | pyRevit, UI API, 按鈕觸發, 觸發按鈕, PostableCommandId, PostCommand, Reload, ribbon 按鈕, 外掛 UI 命令 | `domain/tool-capability-boundary.md` |
+| walking egress, egress review, 步行距離, 避難步行距離, 逃生路徑, 第93條, audit_room_egress, generate_egress_sheet_note | `domain/walking-egress-review.md` |
 
 Meta and governance domain files:
 
@@ -365,7 +366,7 @@ Meta and governance domain files:
 
 ## Skills
 
-The canonical skill catalog is the .claude/skills/ directory itself (61 skills; count table above is the gate).
+The canonical skill catalog is the .claude/skills/ directory itself (62 skills; count table above is the gate).
 
 Use the smallest relevant skill set. If a skill and a domain file conflict on the method, the domain file wins.
 

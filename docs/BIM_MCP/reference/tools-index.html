@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tools 索引（192 個）· BIM_MCP</title>
-<meta property="og:title" content="RevitMCP Tools 索引：192 個執行層工具">
+<title>Tools 索引（194 個）· BIM_MCP</title>
+<meta property="og:title" content="RevitMCP Tools 索引：194 個執行層工具">
 <meta property="og:description" content="192 個 MCP 工具 × 唯讀/寫入標註 × 來源模組。Tool 是執行層，方法在 Domain、編排在 Skill。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -89,9 +89,9 @@
 </nav>
 
 <header class="bim-hero">
-  <div class="bim-hero-eyebrow">TOOLS INDEX <span class="accent">192 個</span></div>
+  <div class="bim-hero-eyebrow">TOOLS INDEX <span class="accent">194 個</span></div>
   <h1 class="bim-hero-title">Tools · <span class="accent">執行層</span><br>模型上真正被動到的那一下</h1>
-  <p class="bim-hero-sub">Tool 是<strong>執行</strong>。它不決定方法，也不決定順序——方法在 <a href="domain-index.html">Domain</a>，順序在 <a href="skills-index.html">Skill</a>。這一頁把 192 個工具攤開，讓你看得到「有什麼」以及「哪些會動到模型」。</p>
+  <p class="bim-hero-sub">Tool 是<strong>執行</strong>。它不決定方法，也不決定順序——方法在 <a href="domain-index.html">Domain</a>，順序在 <a href="skills-index.html">Skill</a>。這一頁把 194 個工具攤開，讓你看得到「有什麼」以及「哪些會動到模型」。</p>
 </header>
 
 <section class="bim-section">
@@ -99,7 +99,7 @@
   <p>每張卡右上角的標記來自工具自己宣告的 <code>annotations</code>，不是這一頁另外標的——閘門 <code>9-1</code> 會驗證它們與程式碼一致。</p>
   <ul>
     <li><strong>唯讀</strong>（85 個）——只讀不寫。跑錯了不會留下痕跡，可以放心探索。</li>
-    <li><strong>會寫入</strong>（104 個）——會在 Transaction 裡改模型，但不刪除既有內容。可以 Undo，但會進 Revit 的復原堆疊。</li>
+    <li><strong>會寫入</strong>（106 個）——會在 Transaction 裡改模型，但不刪除既有內容。可以 Undo，但會進 Revit 的復原堆疊。</li>
     <li><strong>破壞性</strong>（3 個）——刪除或不可逆地取代既有內容：<code>curate_mep_sizes · dedup_detail_elements_in_view · delete_element</code>。這份名單是白名單，程式碼裡多一個就會被閘門擋下。</li>
   </ul>
   <p style="color:var(--text-muted);font-size:13px;">「唯讀」是工具作者的宣告，不是執行時的沙箱。它告訴你這支工具<em>設計上</em>不寫入，不是保證它<em>不可能</em>寫入。</p>
@@ -116,17 +116,17 @@
         <tr><td><strong>B</strong></td><td>建模與構件</td><td class="num">47</td><td>產生或修改實體構件：牆、柱、樑、帷幕、地形、IFC 同步。</td></tr>
         <tr><td><strong>C</strong></td><td>房間與空間</td><td class="num">18</td><td>房間邊界、編號、面積、走廊、施工架周長。</td></tr>
         <tr><td><strong>D</strong></td><td>MEP 與碰撞</td><td class="num">17</td><td>風管系統、空間代表點、套管開孔、CSA 干涉。</td></tr>
-        <tr><td><strong>E</strong></td><td>法規檢核</td><td class="num">13</td><td>排煙、偵煙、樓梯——有法源、有判準的檢查。</td></tr>
+        <tr><td><strong>E</strong></td><td>法規檢核</td><td class="num">15</td><td>排煙、偵煙、樓梯——有法源、有判準的檢查。</td></tr>
         <tr><td><strong>F</strong></td><td>視圖與圖紙</td><td class="num">26</td><td>建視圖、裁剪、圖紙配置、視埠定位、跨專案複製。</td></tr>
         <tr><td><strong>G</strong></td><td>標註與詳圖</td><td class="num">25</td><td>尺寸、詳圖元件、填充區域、圖例、明細表、文字。</td></tr>
         <tr><td><strong>H</strong></td><td>視覺化</td><td class="num">20</td><td>上色、覆寫、隱藏顯示，也含材質與 Type 建構。</td></tr>
     </tbody>
   </table>
-  <p style="color:var(--text-muted);font-size:13px;">分類是 40 個來源模組的一個分割——每個模組恰好屬於一類，八類加總等於 192。這一頁由 <code>registerRevitTools()</code> 產生，不是手寫的。</p>
+  <p style="color:var(--text-muted);font-size:13px;">分類是 40 個來源模組的一個分割——每個模組恰好屬於一類，八類加總等於 194。這一頁由 <code>registerRevitTools()</code> 產生，不是手寫的。</p>
 </section>
 
 <section class="bim-section">
-  <h2 class="bim-section-title">192 個工具 · 依用途分組</h2>
+  <h2 class="bim-section-title">194 個工具 · 依用途分組</h2>
 
     <div class="cat-header">A · 基礎與查詢（26 個）</div>
     <p class="cat-blurb">讀模型、找元素、問參數，多數工作的第一步；也包含少數寫入型前置工具（如載入共用參數檔 load_shared_parameters）。</p>
@@ -1219,7 +1219,7 @@
         <div class="tool-desc">唯讀掃描 MEP 管線穿越結構的開孔候選。沿用 detect_clashes 的 Curve-to-Solid 幾何核心，依明確的每側 clearanceMm 計算建議孔徑，並以 candidate / review_required 與 warningCodes 保守分流；不建立套管、開孔族群、標記或視圖圖形。</div>
       </div>
     </div>
-    <div class="cat-header">E · 法規檢核（13 個）</div>
+    <div class="cat-header">E · 法規檢核（15 個）</div>
     <p class="cat-blurb">排煙、偵煙、樓梯——有法源、有判準的檢查。</p>
     <div class="tool-card" id="analyze_smoke_detectors" data-tool="analyze_smoke_detectors">
       <div>
@@ -1229,6 +1229,16 @@
       </div>
       <div>
         <div class="tool-desc">偵煙探測器設置分析：掃描當前視圖的探測器、空調出風口（FCU/冷風機）、房間，回傳各探測器的距出風口距離、距牆/樑距離、距天花板距離，以及各房間的探測器數量與樑區格數。供 JS 端進行五項法規判定。</div>
+      </div>
+    </div>
+    <div class="tool-card" id="audit_room_egress" data-tool="audit_room_egress">
+      <div>
+        <div class="tool-name">audit_room_egress</div>
+        <div class="tool-flags"><span class="tool-badge write">會寫入</span></div>
+        <div class="tool-module">egress-audit-tools</div>
+      </div>
+      <div>
+        <div class="tool-desc">執行房間避難步行距離法規檢核。自動建立房間避難共用參數、由房間外圈頂點內縮 0.3m 計算至各避難出口門的室內逃生路徑，多出口時自動為每個房間擇定最近出口並僅保留 1 條最不利路徑、寫入合格狀態參數、隨距離檢討自動於 Revit 專案中建立或更新「避難步行距離檢討表」明細表（ViewSchedule，僅存於專案明細表清單、不直接排版至圖紙上）、套用視圖紅綠線型覆寫、中點標籤、於每個轉折線段（&gt;= 10cm）建立 Revit 原生線性尺寸標註，並自動於預設瀏覽器彈出外部視覺化總結報告（支援點選空間直接連動顯示 Revit 內該空間與逃生路徑）。</div>
       </div>
     </div>
     <div class="tool-card" id="check_floor_effective_openings" data-tool="check_floor_effective_openings">
@@ -1329,6 +1339,16 @@
       </div>
       <div>
         <div class="tool-desc">匯出排煙窗檢討 Excel 報告（.xlsx），含樓層總覽、房間明細、窗戶明細、改善建議、§101補充檢討（排風量提醒+中央管理室偵測）五個工作表。</div>
+      </div>
+    </div>
+    <div class="tool-card" id="generate_egress_sheet_note" data-tool="generate_egress_sheet_note">
+      <div>
+        <div class="tool-name">generate_egress_sheet_note</div>
+        <div class="tool-flags"><span class="tool-badge write">會寫入</span></div>
+        <div class="tool-module">egress-audit-tools</div>
+      </div>
+      <div>
+        <div class="tool-desc">建立或更新 Revit 專案中的「避難步行距離檢討表」明細表（預設僅存於 Revit 明細表清單、不直接排版到檢討樓層的圖紙上），並於指定圖紙放置法規檢討綜整說明文字（TextNote）。</div>
       </div>
     </div>
     <div class="tool-card" id="get_stair_actual_width" data-tool="get_stair_actual_width">
@@ -2078,7 +2098,7 @@
     <a href="../index.html" class="bim-footer-btn">回 BIM_MCP 首頁</a>
   </div>
   <p>BIM_MCP · reference / tools-index</p>
-  <p style="font-size:11px;color:var(--text-faint);margin-top:6px;">192 個 MCP 工具完整索引，由 registerRevitTools() 產生；唯讀/寫入標註取自工具自身 annotations。</p>
+  <p style="font-size:11px;color:var(--text-faint);margin-top:6px;">194 個 MCP 工具完整索引，由 registerRevitTools() 產生；唯讀/寫入標註取自工具自身 annotations。</p>
 </footer>
 
 <script src="../shared.js"></script>
